@@ -11,7 +11,7 @@ Luồng:
    - Nếu video KHÔNG có nút Show transcript/get_panel: lấy captionTracks động rồi fetch /api/timedtext?fmt=json3.
    - KHÔNG hard-code cookie, signature, pot, expire hay cURL; mọi token lấy mới từ chính video/session hiện tại.
 4) Tạo 2 file RIÊNG: *_PROMPT.txt và *_TRANSCRIPT.txt; tuyệt đối không ghép text.
-5) Mở Chrome ChatGPT thật, chờ bạn login/xác minh bằng tay, sau đó Selenium mới attach; PROMPT được COPY vào Windows clipboard và Ctrl+V đúng MỘT LẦN vào composer; tuyệt đối không chèn bằng JS/CDP/chunk. Sau đó code verify cấu trúc + thứ tự timestamp mẫu. TRANSCRIPT được đính kèm RIÊNG bằng uploader thật. Mỗi bước phải verify thành công mới được Send.
+5) Mở Chrome ChatGPT thật và attach Selenium; chỉ hỏi login/xác minh khi phát hiện auth/challenge thật; PROMPT được COPY vào Windows clipboard và Ctrl+V đúng MỘT LẦN vào composer; tuyệt đối không chèn bằng JS/CDP/chunk. Sau đó code verify cấu trúc + thứ tự timestamp mẫu. TRANSCRIPT được đính kèm RIÊNG bằng uploader thật. Mỗi bước phải verify thành công mới được Send.
 6) Parse NONE hoặc các mốc HH:MM:SS --> ... / END.
 7) Sau khi có mốc hợp lệ mới tải AUDIO-ONLY và chuyển trực tiếp sang MP3 bằng story_cutter_core.py.
 8) Cắt bỏ các đoạn trên MP3 và ghép lại, chuyển vào channels/<kênh>/done/.
@@ -19,9 +19,10 @@ Luồng:
 LƯU Ý:
 - Hai profile nằm trong ./chrome_profiles/youtube và ./chrome_profiles/chatgpt.
 - Không cần copy cookie YouTube vào code. Cookie trong cURL sẽ hết hạn.
-- ChatGPT luôn dừng chờ để bạn tự đăng nhập/xác minh xong rồi mới attach Selenium.
+- ChatGPT giữ Chrome/profile sống khi có thể; không dừng tay nếu session còn hợp lệ.
 """
 
+import base64
 import json
 import os
 import re
@@ -79,7 +80,7 @@ YOUTUBE_USER_DATA_DIR = PROFILE_ROOT / "youtube"
 CHATGPT_USER_DATA_DIR = PROFILE_ROOT / "chatgpt"
 
 # ChatGPT được mở bằng Chrome THẬT trước, chưa có Selenium điều khiển.
-# Sau khi bạn tự login / xác minh xong và nhấn ENTER, Selenium mới attach vào Chrome này.
+# Selenium attach vào Chrome thật đang chạy; chỉ cần thao tác tay nếu auth/challenge thật sự xuất hiện.
 CHATGPT_DEBUG_HOST = "127.0.0.1"
 CHATGPT_DEBUG_PORT = 9222
 
@@ -98,21 +99,21 @@ CHATGPT_DEBUG_ACCOUNT_FILE = BASE_DIR / "runtime" / "chatgpt_debug_account.txt"
 ACTIVE_CHATGPT_ACCOUNT_KEY = ""
 ACTIVE_CHATGPT_ACCOUNT_NAME = ""
 
-WAIT_PAGE = 60
-WAIT_TRANSCRIPT = 35
-WAIT_CHATGPT_READY = 120
-WAIT_CHATGPT_RESPONSE = 900
+WAIT_PAGE = 35
+WAIT_TRANSCRIPT = 20
+WAIT_CHATGPT_READY = 20
+WAIT_CHATGPT_RESPONSE = 240
 
 # Tự đóng hẳn Chrome ChatGPT và mở lại sau mỗi N video để giải phóng RAM.
 # 0 = tắt. Giá trị này chỉ còn dùng khi chạy SINGLE PROFILE.
-CHATGPT_RESTART_EVERY = 50
+CHATGPT_RESTART_EVERY = 0
 
 # MULTI-PROFILE ROUND ROBIN:
 # True  = VIDEO 1 -> profile 1, VIDEO 2 -> profile 2, ... rồi quay vòng.
 # Mỗi profile dùng Project đầu tiên đang enabled trong chatgpt_accounts.json.
 CHATGPT_ROUND_ROBIN = True
 # Đóng HẲN Chrome ChatGPT sau mỗi video để chỉ có 1 profile ChatGPT chạy tại một thời điểm.
-CHATGPT_ROUND_ROBIN_CLOSE_EACH_VIDEO = True
+CHATGPT_ROUND_ROBIN_CLOSE_EACH_VIDEO = False
 
 # ChatGPT sidebar/project list can occasionally return HTTP 429 on
 # /backend-api/conversations while the current model answer still succeeds.
@@ -157,11 +158,11 @@ REUSE_VALID_AI_RESULT = True
 AI_REPAIR_ATTEMPTS = 2
 
 # ChatGPT: prompt native Ctrl+V một lần; transcript chỉ upload FILE thật.
-CHATGPT_UPLOAD_WAIT = 45
+CHATGPT_UPLOAD_WAIT = 30
 CHATGPT_UPLOAD_RETRIES = 2
 CHATGPT_PASTE_FALLBACK_WAIT = 20  # legacy helper only
 CHATGPT_SMART_CHAT_ATTEMPTS = 2
-PROMPT_NATIVE_PASTE_WAIT = 12
+PROMPT_NATIVE_PASTE_WAIT = 8
 PROMPT_MIN_WORD_RATIO = 0.95
 # Trên UI ChatGPT hiện tại, paste dài có thể tự biến thành “pasted text” attachment.
 # Với prompt dài hơn ngưỡng này, dùng CDP Input.insertText MỘT LẦN (không chunk) để giữ inline.
@@ -182,7 +183,7 @@ DELETE_LIVE_COOKIE_AFTER_DOWNLOAD = True
 
 # Nếu get_panel/Show transcript thất bại, thử captionTracks -> /api/timedtext JSON3.
 ENABLE_TRANSCRIPT_TIMEDTEXT_FALLBACK = True
-TIMEDTEXT_FETCH_TIMEOUT = 45
+TIMEDTEXT_FETCH_TIMEOUT = 15
 
 # Fallback cuối: đọc transcript đang render trong DOM (nếu panel có thể mở).
 ENABLE_TRANSCRIPT_DOM_FALLBACK = True
@@ -452,7 +453,7 @@ def print_chatgpt_rotation_plan(targets, start_cursor=0):
             f"Project: {project['name']}{start_mark}"
         )
     print(f"🔄 Tổng profile trong vòng xoay: {len(targets)}")
-    print("🧹 Mỗi video xong sẽ đóng Chrome ChatGPT trước khi sang profile kế tiếp.")
+    print("⚡ Chrome ChatGPT được giữ sống nếu video kế tiếp dùng cùng profile; chỉ đổi/restart khi thật sự cần.")
 
 
 def chatgpt_project_url_matches(current_url, project):
@@ -478,17 +479,31 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
         raise RuntimeError("ChatGPT Project URL rỗng")
 
     print(f"📁 NEW CHAT trong Project: {project.get('name') or project.get('key')}")
-    try:
-        driver.get(target)
-    except Exception as exc:
-        raise RuntimeError(f"Không mở được Project URL: {exc}") from exc
 
+    # FAST PATH: nếu đang ở đúng Project và composer đã hiện thì không driver.get() lại.
+    already_ready = False
     try:
-        WebDriverWait(driver, min(timeout, 60)).until(
-            lambda d: d.execute_script("return document.readyState") in {"interactive", "complete"}
+        already_ready = (
+            chatgpt_project_url_matches(safe_current_url(driver), project)
+            and find_chatgpt_composer(driver) is not None
         )
     except Exception:
-        pass
+        already_ready = False
+
+    if already_ready:
+        print("⚡ Project đã mở sẵn + có composer -> bỏ qua reload.")
+    else:
+        try:
+            driver.get(target)
+        except Exception as exc:
+            raise RuntimeError(f"Không mở được Project URL: {exc}") from exc
+
+        try:
+            WebDriverWait(driver, min(timeout, 15)).until(
+                lambda d: d.execute_script("return document.readyState") in {"interactive", "complete"}
+            )
+        except Exception:
+            pass
 
     # Passive check: nếu request sidebar /backend-api/conversations vừa bị HTTP 429,
     # KHÔNG gửi thêm API request để check; chỉ quan sát request browser đã tạo rồi
@@ -659,7 +674,7 @@ def fetch_video_metadata(video_url, js_arguments, youtube_driver=None, cookie_fi
     không đứng im hàng phút chỉ vì --dump-single-json bị treo.
     """
 
-    METADATA_YTDLP_TIMEOUT = 20
+    METADATA_YTDLP_TIMEOUT = 12
 
     def merge_into(base, extra):
         if not extra:
@@ -1060,6 +1075,9 @@ def create_youtube_driver():
     options.add_argument("--no-default-browser-check")
     options.add_argument("--start-maximized")
     options.add_argument("--log-level=3")
+    # EAGER: Selenium không chờ toàn bộ ảnh/quảng cáo/resource phụ tải xong.
+    # DOM interactive là đủ cho transcript/player bootstrap.
+    options.page_load_strategy = "eager"
 
     # Cần performance log để fallback bắt response get_panel thật của YouTube.
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
@@ -1071,6 +1089,14 @@ def create_youtube_driver():
     try:
         # Selenium 4 có Selenium Manager, không cần webdriver-manager.
         driver = webdriver.Chrome(options=options)
+        try:
+            driver.set_page_load_timeout(WAIT_PAGE)
+        except Exception:
+            pass
+        try:
+            driver.set_script_timeout(20)
+        except Exception:
+            pass
 
         try:
             driver.execute_cdp_cmd("Network.enable", {})
@@ -1145,7 +1171,7 @@ def chatgpt_debug_port_ready(timeout=1.0):
 def launch_chatgpt_manual_chrome(start_url=None):
     """
     Mở Chrome ChatGPT THẬT bằng subprocess + remote debugging.
-    Selenium chỉ attach SAU KHI user tự login/Cloudflare.
+    Mở Chrome thật trước rồi Selenium attach vào session thật; không dừng tay nếu session còn hợp lệ.
     """
     CHATGPT_USER_DATA_DIR.mkdir(parents=True, exist_ok=True)
     RUNTIME_DIR.mkdir(parents=True, exist_ok=True)
@@ -1208,6 +1234,108 @@ def launch_chatgpt_manual_chrome(start_url=None):
     print("Hãy đóng Chrome ChatGPT của project rồi chạy lại.")
     return False
 
+
+def chatgpt_really_needs_manual_auth(driver):
+    """
+    Chỉ trả True khi có dấu hiệu RÕ RÀNG là login/challenge.
+    Generic Selenium Timeout / Project load chậm KHÔNG được coi là logout.
+    """
+    if not driver_alive(driver):
+        return False
+
+    url = safe_current_url(driver).lower()
+    if "auth.openai.com" in url:
+        return True
+    if any(x in url for x in ("/auth/login", "/login", "/signup")):
+        return True
+
+    try:
+        body = (driver.find_element(By.TAG_NAME, "body").text or "").lower()
+    except Exception:
+        body = ""
+
+    hard_markers = (
+        "verify you are human",
+        "checking your browser",
+        "cloudflare",
+        "just a moment",
+        "log in to chatgpt",
+        "login to chatgpt",
+        "sign in to chatgpt",
+    )
+    if any(marker in body for marker in hard_markers):
+        return True
+
+    # Nút login/sign up trên trang ChatGPT nhưng KHÔNG có composer.
+    try:
+        if find_chatgpt_composer(driver):
+            return False
+    except Exception:
+        pass
+
+    try:
+        buttons = driver.find_elements(By.CSS_SELECTOR, "button, a")
+        for el in buttons[:120]:
+            try:
+                txt = " ".join([
+                    el.text or "",
+                    el.get_attribute("aria-label") or "",
+                    el.get_attribute("href") or "",
+                ]).strip().lower()
+                if txt in {"log in", "login", "sign in"} or "/auth/login" in txt:
+                    return True
+            except Exception:
+                continue
+    except Exception:
+        pass
+
+    return False
+
+
+def auto_open_project_with_retries(driver, project, attempts=4, timeout=None):
+    """
+    Tự vào Project/composer nhiều lần.
+    - Timeout/load chậm/draft/UI chưa render: tự retry/refresh.
+    - Chỉ báo MANUAL_AUTH khi thật sự thấy login/challenge.
+    """
+    timeout = timeout or WAIT_CHATGPT_READY
+    last_exc = None
+
+    for attempt in range(1, attempts + 1):
+        try:
+            open_chatgpt_project_new_chat(driver, project, timeout=timeout)
+            return True, False, None
+        except Exception as exc:
+            last_exc = exc
+            err = str(exc).strip() or type(exc).__name__
+            print(f"   ⚠️ Project/composer chưa sẵn sàng {attempt}/{attempts}: {err}")
+
+            if chatgpt_really_needs_manual_auth(driver):
+                print("   🔐 Phát hiện login/challenge thật sự.")
+                return False, True, exc
+
+            # Generic timeout / UI load chậm: không gọi là logout.
+            try:
+                target = str((project or {}).get("url") or CHATGPT_HOME).strip() or CHATGPT_HOME
+                if attempt == 1:
+                    sleep(0.50)
+                elif attempt == 2:
+                    print("   🔄 Reload lại đúng Project...")
+                    driver.get(target)
+                    sleep(2.0)
+                elif attempt == 3:
+                    print("   🔄 Refresh Project rồi thử lần cuối...")
+                    try:
+                        driver.refresh()
+                    except Exception:
+                        driver.get(target)
+                    sleep(2.5)
+            except Exception:
+                sleep(1.5)
+
+    return False, False, last_exc
+
+
 def wait_manual_chatgpt_login_before_attach():
     """
     DỪNG CỨNG trước khi Selenium attach.
@@ -1235,7 +1363,7 @@ def wait_manual_chatgpt_login_before_attach():
 
 
 def attach_chatgpt_driver():
-    """Chỉ gọi SAU KHI người dùng đã login/xác minh ChatGPT bằng tay."""
+    """Attach Selenium vào Chrome ChatGPT thật đang chạy qua remote debugging."""
     options = webdriver.ChromeOptions()
 
     # QUAN TRỌNG: chỉ rõ Chrome binary cả khi ATTACH.
@@ -1257,21 +1385,17 @@ def attach_chatgpt_driver():
         print(f"❌ Attach Chrome ChatGPT thất bại: {exc}")
         return None
 
+    # Attach thành công là đủ. Composer có thể render chậm hoặc trang đang ở Home/Project
+    # chưa load xong; caller sẽ tự navigate + retry. Không được biến generic timeout thành
+    # "cần login thủ công".
     try:
-        wait_chatgpt_composer(driver, timeout=30)
+        wait_chatgpt_composer(driver, timeout=12)
+        print("✅ Attach thành công. Đã thấy composer ChatGPT.")
     except Exception:
-        print("\n❌ Đã attach nhưng chưa thấy ô nhập ChatGPT.")
-        print("Có thể bạn nhấn ENTER quá sớm hoặc trang vẫn đang ở bước login/Cloudflare.")
-        print("Hãy đóng chương trình, mở lại và chỉ ENTER khi đã thấy ô chat thật sự.")
-        try:
-            driver.quit()
-        except Exception:
-            pass
-        return None
+        print("✅ Attach Selenium thành công; composer chưa render ngay -> sẽ tự vào Project/retry.")
 
     install_chatgpt_429_network_observer(driver)
     handle_chatgpt_conversations_api_429(driver, quiet=True)
-    print("✅ Attach thành công. ChatGPT đã sẵn sàng nhận prompt.")
     return driver
 
 
@@ -1401,12 +1525,70 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
     """
     Chuyển sang đúng Chrome profile + Project cho MỘT lượt round-robin.
 
-    - Đóng phiên ChatGPT cũ nếu còn.
-    - Set profile account mới.
-    - Mở Chrome bằng đúng user-data-dir của account.
-    - Nếu session còn login: attach tự động, KHÔNG hỏi ENTER.
-    - Chỉ khi session hết hạn/Cloudflare/login lỗi mới yêu cầu người dùng xử lý tay.
+    Bản AUTO:
+    - Mở Chrome thật -> attach Selenium ngay.
+    - Generic timeout / Project load chậm: tự retry, KHÔNG hỏi ENTER.
+    - Đóng/mở Chrome lại 1 lần nếu cần.
+    - Chỉ dừng login thủ công khi phát hiện RÕ auth.openai.com/login/challenge.
     """
+
+    target_key = str((account or {}).get("key") or "").strip()
+    same_profile = (
+        old_driver is not None
+        and driver_alive(old_driver)
+        and target_key
+        and str(ACTIVE_CHATGPT_ACCOUNT_KEY or "").strip() == target_key
+    )
+
+    # FAST PATH:
+    # Nếu video kế tiếp vẫn dùng cùng account/profile thì GIỮ NGUYÊN Chrome thật.
+    # Chỉ đưa tab về đúng Project + composer sạch, không kill/open/attach lại.
+    if same_profile:
+        set_active_chatgpt_account(account)
+        project = dict(project or {})
+        project.update({
+            "account_key": account.get("key", ""),
+            "account_name": account.get("name", account.get("key", "")),
+            "profile_dir": str(CHATGPT_USER_DATA_DIR),
+        })
+        try:
+            current_url = safe_current_url(old_driver)
+            composer = find_chatgpt_composer(old_driver)
+
+            if composer and chatgpt_project_url_matches(current_url, project):
+                # Đã đúng Project rồi: clear draft và đi luôn, không navigate lại.
+                residual = _loose_compare_text(get_chatgpt_composer_text(old_driver, composer))
+                if residual:
+                    print(f"🧹 Same profile: xóa draft còn lại ({len(residual)} chars)...")
+                    clear_chatgpt_composer(composer)
+                    sleep(0.18)
+
+                composer = find_chatgpt_composer(old_driver)
+                residual = _loose_compare_text(get_chatgpt_composer_text(old_driver, composer)) if composer else "x"
+                if composer and not residual:
+                    print("⚡ FAST CHATGPT: giữ nguyên Chrome/profile + Project hiện tại.")
+                    return old_driver, old_process, project
+
+            # Không đúng Project hoặc composer chưa có: navigation/retry nhẹ, vẫn không restart.
+            ok, manual_auth, exc = auto_open_project_with_retries(
+                old_driver,
+                project,
+                attempts=3,
+                timeout=min(WAIT_CHATGPT_READY, 15),
+            )
+            if ok:
+                print("⚡ FAST CHATGPT: reuse Chrome hiện tại, không restart.")
+                return old_driver, old_process, project
+            if manual_auth:
+                print("🔐 Same profile phát hiện auth/challenge thật; mới chuyển sang flow login.")
+            else:
+                print(
+                    "⚠️ Reuse Chrome chưa được; mới fallback sang restart profile."
+                    + (f" ({str(exc).strip()})" if exc else "")
+                )
+        except Exception as exc:
+            print(f"⚠️ FAST reuse lỗi tạm thời -> fallback restart: {type(exc).__name__}: {exc}")
+
     if old_driver is not None or old_process not in (None, False):
         close_chatgpt_browser_hard(old_driver, old_process)
         sleep(0.7)
@@ -1427,49 +1609,73 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
     print("=" * 72)
 
     start_url = project.get("url") or CHATGPT_HOME
-    new_process = launch_chatgpt_manual_chrome(start_url)
-    if new_process is False:
-        raise RuntimeError(f"Không mở được Chrome ChatGPT profile {account.get('key')}")
 
-    # Profile đã login thì attach thẳng, không dừng hỏi người dùng mỗi lượt.
-    new_driver = attach_chatgpt_driver()
-    if new_driver:
-        try:
-            open_chatgpt_project_new_chat(new_driver, project, timeout=WAIT_CHATGPT_READY)
-            print("✅ Profile đã login; vào đúng Project tự động.")
-            return new_driver, new_process, project
-        except Exception as exc:
-            print(f"⚠️ Attach được nhưng chưa vào đúng Project/composer: {exc}")
-            try:
-                new_driver.execute_cdp_cmd("Browser.close", {})
-            except Exception:
-                try:
-                    new_driver.quit()
-                except Exception:
-                    pass
-            _wait_chatgpt_debug_port_closed(timeout=5)
-            new_driver = None
-
-    # Chỉ rơi vào đây nếu profile chưa login / session hết / Cloudflare.
-    print(f"⚠️ Profile '{account.get('name')}' cần login/xác minh lại.")
-    if not chatgpt_debug_port_ready():
+    # Tối đa 2 vòng browser: vòng đầu bình thường, vòng 2 là restart recovery.
+    for browser_try in range(1, 3):
         new_process = launch_chatgpt_manual_chrome(start_url)
         if new_process is False:
-            raise RuntimeError(f"Không mở lại được Chrome để login profile {account.get('key')}")
-    wait_manual_chatgpt_login_before_attach()
-    new_driver = attach_chatgpt_driver()
-    if not new_driver:
-        raise RuntimeError(f"Không attach được ChatGPT profile {account.get('key')} sau login")
-    open_chatgpt_project_new_chat(new_driver, project, timeout=WAIT_CHATGPT_READY)
-    print("✅ Login/xác minh xong; profile đã sẵn sàng.")
-    return new_driver, new_process, project
+            raise RuntimeError(f"Không mở được Chrome ChatGPT profile {account.get('key')}")
+
+        new_driver = attach_chatgpt_driver()
+        if new_driver:
+            ok, manual_auth, exc = auto_open_project_with_retries(
+                new_driver, project, attempts=4, timeout=WAIT_CHATGPT_READY
+            )
+            if ok:
+                print("✅ Profile đã login; vào đúng Project tự động.")
+                return new_driver, new_process, project
+
+            if manual_auth:
+                print(f"⚠️ Profile '{account.get('name')}' thật sự cần login/xác minh.")
+                wait_manual_chatgpt_login_before_attach()
+                # Browser vẫn đang mở; attach có thể đang tồn tại. Dùng driver hiện tại trước.
+                if not driver_alive(new_driver):
+                    new_driver = attach_chatgpt_driver()
+                ok2, _, exc2 = auto_open_project_with_retries(
+                    new_driver, project, attempts=3, timeout=WAIT_CHATGPT_READY
+                )
+                if ok2:
+                    print("✅ Login/xác minh xong; profile đã sẵn sàng.")
+                    return new_driver, new_process, project
+                raise RuntimeError(
+                    f"Đã login nhưng vẫn không vào được Project {project.get('name')}: "
+                    f"{str(exc2).strip() or type(exc2).__name__}"
+                )
+
+            err = str(exc).strip() if exc else ""
+            print(
+                f"⚠️ Không phải lỗi login; Project/UI chưa sẵn sàng sau auto retry"
+                f"{(': ' + err) if err else ''}"
+            )
+
+            # Recovery browser tự động đúng 1 lần.
+            if browser_try == 1:
+                print("♻️ Tự restart Chrome ChatGPT 1 lần rồi thử lại, KHÔNG cần ENTER.")
+                close_chatgpt_browser_hard(new_driver, new_process)
+                sleep(1.0)
+                continue
+
+            raise RuntimeError(
+                f"ChatGPT Project/composer không sẵn sàng sau auto recovery; "
+                "không phát hiện login/Cloudflare."
+            )
+
+        # Attach thất bại thật sự: restart 1 vòng, không hỏi tay ngay.
+        if browser_try == 1:
+            print("♻️ Attach chưa được -> tự restart Chrome 1 lần.")
+            close_chatgpt_browser_hard(None, new_process)
+            sleep(1.0)
+            continue
+
+        raise RuntimeError(f"Không attach được ChatGPT profile {account.get('key')}")
+
+    raise RuntimeError(f"Không mở được ChatGPT profile {account.get('key')}")
 
 
 def restart_chatgpt_browser(chatgpt_driver, chatgpt_process, chatgpt_project):
     """
-    Restart định kỳ Chrome ChatGPT nhưng GIỮ nguyên profile đăng nhập và Project đã chọn.
-    Bình thường không cần người dùng thao tác. Nếu session hết hạn/Cloudflare thì mới dừng để xử lý tay.
-    Trả về (driver_mới, process_mới).
+    Restart định kỳ Chrome ChatGPT.
+    Generic timeout/UI load chậm được tự retry; chỉ hỏi tay nếu thấy login/challenge thật.
     """
     project_name = (chatgpt_project or {}).get("name") or (chatgpt_project or {}).get("key") or "Project"
     start_url = (chatgpt_project or {}).get("url") or CHATGPT_HOME
@@ -1482,60 +1688,60 @@ def restart_chatgpt_browser(chatgpt_driver, chatgpt_process, chatgpt_project):
     close_chatgpt_browser_hard(chatgpt_driver, chatgpt_process)
     sleep(1.0)
 
-    new_process = launch_chatgpt_manual_chrome(start_url)
-    if new_process is False:
-        raise RuntimeError("Không mở lại được Chrome ChatGPT sau periodic restart")
-
-    # Login thường vẫn còn trong profile nên attach thẳng, không bắt ENTER mỗi 50 video.
-    new_driver = attach_chatgpt_driver()
-    if new_driver:
-        try:
-            open_chatgpt_project_new_chat(new_driver, chatgpt_project, timeout=WAIT_CHATGPT_READY)
-            print("✅ Restart ChatGPT xong, đã quay lại đúng Project.")
-            return new_driver, new_process
-        except Exception as exc:
-            err_text = str(exc)
-            print(f"⚠️ Chrome mở lại nhưng chưa vào được Project/composer: {err_text}")
-
-            # Draft Project không phải logout/Cloudflare.
-            # Đừng bắt người dùng ENTER/login sai nguyên nhân.
-            if "draft cũ" in err_text.lower():
-                print("🧹 Đây là draft Project bị restore, KHÔNG phải logout.")
-                try:
-                    # Thử lại ngay trên browser hiện tại thêm một lần.
-                    sleep(1.0)
-                    open_chatgpt_project_new_chat(
-                        new_driver,
-                        chatgpt_project,
-                        timeout=WAIT_CHATGPT_READY,
-                    )
-                    print("✅ Tự xử lý draft xong sau restart.")
-                    return new_driver, new_process
-                except Exception as retry_exc:
-                    print(f"⚠️ Auto-clear draft sau restart vẫn chưa được: {retry_exc}")
-
-            try:
-                new_driver.quit()
-            except Exception:
-                pass
-            new_driver = None
-
-    # Chỉ khi thật sự không còn composer/session usable mới yêu cầu người dùng can thiệp.
-    print("⚠️ Cần đăng nhập/xác minh ChatGPT lại bằng tay.")
-    if not chatgpt_debug_port_ready():
+    for browser_try in range(1, 3):
         new_process = launch_chatgpt_manual_chrome(start_url)
         if new_process is False:
-            raise RuntimeError("Không mở lại được Chrome ChatGPT để login thủ công")
-    wait_manual_chatgpt_login_before_attach()
-    new_driver = attach_chatgpt_driver()
-    if not new_driver:
+            raise RuntimeError("Không mở lại được Chrome ChatGPT sau periodic restart")
+
+        new_driver = attach_chatgpt_driver()
+        if new_driver:
+            ok, manual_auth, exc = auto_open_project_with_retries(
+                new_driver, chatgpt_project, attempts=4, timeout=WAIT_CHATGPT_READY
+            )
+            if ok:
+                print("✅ Restart ChatGPT xong, đã quay lại đúng Project.")
+                return new_driver, new_process
+
+            if manual_auth:
+                print("⚠️ Phát hiện login/challenge thật sự; mới cần thao tác tay.")
+                wait_manual_chatgpt_login_before_attach()
+                if not driver_alive(new_driver):
+                    new_driver = attach_chatgpt_driver()
+                ok2, _, exc2 = auto_open_project_with_retries(
+                    new_driver, chatgpt_project, attempts=3, timeout=WAIT_CHATGPT_READY
+                )
+                if ok2:
+                    print("✅ Login/xác minh xong, tiếp tục batch.")
+                    return new_driver, new_process
+                raise RuntimeError(
+                    f"Login xong nhưng Project vẫn chưa sẵn sàng: "
+                    f"{str(exc2).strip() or type(exc2).__name__}"
+                )
+
+            if browser_try == 1:
+                print("♻️ Project/UI load lỗi tạm thời -> tự restart thêm 1 lần, không cần ENTER.")
+                close_chatgpt_browser_hard(new_driver, new_process)
+                sleep(1.0)
+                continue
+
+            raise RuntimeError(
+                "Project/composer không sẵn sàng sau auto recovery; "
+                "không phát hiện login/Cloudflare."
+            )
+
+        if browser_try == 1:
+            print("♻️ Attach chưa được -> tự restart thêm 1 lần.")
+            close_chatgpt_browser_hard(None, new_process)
+            sleep(1.0)
+            continue
+
         raise RuntimeError("Không attach được ChatGPT sau periodic restart")
-    open_chatgpt_project_new_chat(new_driver, chatgpt_project, timeout=WAIT_CHATGPT_READY)
-    print("✅ Restart ChatGPT + login/xác minh xong, tiếp tục batch.")
-    return new_driver, new_process
+
+    raise RuntimeError("Restart ChatGPT thất bại")
+
 
 def prepare_browsers(chatgpt_project=None):
-    """Khởi tạo YouTube Selenium + Chrome ChatGPT manual rồi mới attach."""
+    """Khởi tạo YouTube + Chrome ChatGPT thật và attach TỰ ĐỘNG."""
     PROFILE_ROOT.mkdir(parents=True, exist_ok=True)
 
     youtube_driver = create_youtube_driver()
@@ -1551,7 +1757,7 @@ def prepare_browsers(chatgpt_project=None):
             pass
         return None, None, None
 
-    wait_manual_chatgpt_login_before_attach()
+    # Không dừng ENTER mặc định nữa.
     chatgpt_driver = attach_chatgpt_driver()
     if not chatgpt_driver:
         try:
@@ -1559,6 +1765,23 @@ def prepare_browsers(chatgpt_project=None):
         except Exception:
             pass
         return None, None, None
+
+    if chatgpt_project:
+        ok, manual_auth, _ = auto_open_project_with_retries(
+            chatgpt_driver, chatgpt_project, attempts=4, timeout=WAIT_CHATGPT_READY
+        )
+        if not ok and manual_auth:
+            print("⚠️ Chỉ vì phát hiện login/challenge thật sự nên mới cần thao tác tay.")
+            wait_manual_chatgpt_login_before_attach()
+            ok, _, _ = auto_open_project_with_retries(
+                chatgpt_driver, chatgpt_project, attempts=3, timeout=WAIT_CHATGPT_READY
+            )
+        if not ok:
+            try:
+                youtube_driver.quit()
+            except Exception:
+                pass
+            return None, None, None
 
     return youtube_driver, chatgpt_driver, chatgpt_process
 
@@ -1581,6 +1804,34 @@ def wait_youtube_ready(driver):
     WebDriverWait(driver, WAIT_PAGE).until(
         lambda d: d.execute_script("return document.readyState") in {"interactive", "complete"}
     )
+
+
+
+def wait_youtube_player_bootstrap(driver, timeout=4.0):
+    """
+    Chờ player/bootstrap theo kiểu adaptive:
+    - mạng nhanh: thường thoát sau 0.1-0.4s;
+    - mạng lag: chờ tối đa vài giây;
+    - không fixed sleep 2s cho mọi video.
+    """
+    deadline = time.time() + max(0.5, float(timeout))
+    while time.time() < deadline:
+        try:
+            ready = driver.execute_script(
+                """
+                return !!(
+                    window.ytInitialPlayerResponse ||
+                    document.getElementById('movie_player') ||
+                    document.querySelector('video.html5-main-video')
+                );
+                """
+            )
+            if ready:
+                return True
+        except Exception:
+            pass
+        sleep(0.10)
+    return False
 
 
 def fetch_get_panel_direct(driver):
@@ -1681,7 +1932,7 @@ def fetch_get_panel_direct(driver):
     """
 
     try:
-        driver.set_script_timeout(40)
+        driver.set_script_timeout(15)
         raw = driver.execute_async_script(script)
         result = json.loads(raw)
     except Exception as exc:
@@ -1776,7 +2027,7 @@ def try_open_transcript_panel(driver):
         ],
         texts=["...more", "more", "thêm"],
     )
-    sleep(1)
+    sleep(0.40)
 
     # 3) Tìm lại transcript.
     return click_first_matching(driver, transcript_selectors, transcript_texts)
@@ -1831,7 +2082,7 @@ def capture_get_panel_from_network(driver):
                 last_error = str(exc)
                 continue
 
-        sleep(0.35)
+        sleep(0.20)
 
     return None, "không bắt được response get_panel trong network log"
 
@@ -2096,7 +2347,10 @@ def fetch_timedtext_json3(driver, base_url):
         done({
           ok: response.ok,
           status: response.status,
+          statusText: response.statusText || '',
           text: text,
+          length: text.length,
+          contentType: response.headers.get('content-type') || '',
           url: u.toString()
         });
       } catch (e) {
@@ -2122,7 +2376,12 @@ def fetch_timedtext_json3(driver, base_url):
 
     raw = result.get("text") or ""
     if not raw.strip():
-        return None, "timedtext trả về body rỗng"
+        return None, (
+            "timedtext endpoint ĐÃ trả response nhưng body rỗng"
+            f" | HTTP={result.get('status')}"
+            f" | content-type={result.get('contentType') or '?'}"
+            f" | bytes={result.get('length', 0)}"
+        )
 
     try:
         payload = json.loads(raw)
@@ -2132,6 +2391,304 @@ def fetch_timedtext_json3(driver, base_url):
     if not isinstance(payload, dict):
         return None, "timedtext JSON3 root không phải object"
     return payload, None
+
+
+
+
+def _decode_cdp_body(body_info):
+    if not isinstance(body_info, dict):
+        return ""
+    body = body_info.get("body") or ""
+    if not body:
+        return ""
+    if body_info.get("base64Encoded"):
+        try:
+            return base64.b64decode(body).decode("utf-8", errors="replace")
+        except Exception:
+            return ""
+    return str(body)
+
+
+def _parse_json3_text(raw):
+    raw = str(raw or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except Exception:
+        return None
+    if isinstance(payload, dict) and isinstance(payload.get("events"), list):
+        return payload
+    return None
+
+
+def trigger_youtube_caption_request(driver):
+    """
+    ÉP YouTube player tạo request /api/timedtext THẬT bằng nút CC.
+
+    Quan trọng:
+    - Nếu CC đang TẮT (aria-pressed=false): click 1 lần để BẬT.
+    - Nếu CC đang BẬT (aria-pressed=true): request timedtext có thể đã chạy TRƯỚC
+      lúc ta clear performance log. Vì vậy phải toggle TẮT -> BẬT lại để ép
+      phát sinh request timedtext mới.
+    - Kết thúc luôn để CC ở trạng thái BẬT.
+    """
+
+    selectors = [
+        "button.ytp-subtitles-button.ytp-button",
+        ".ytp-subtitles-button",
+        "button[aria-keyshortcuts='c']",
+        "button[aria-label*='Phụ đề' i]",
+        "button[aria-label*='subtitles' i]",
+        "button[aria-label*='captions' i]",
+    ]
+
+    def find_cc_button():
+        for selector in selectors:
+            try:
+                elements = driver.find_elements(By.CSS_SELECTOR, selector)
+            except Exception:
+                continue
+
+            for el in elements:
+                try:
+                    if el.is_displayed() and el.is_enabled():
+                        return el
+                except Exception:
+                    continue
+        return None
+
+    def click_button(el):
+        # Native click trước, JS click fallback.
+        try:
+            driver.execute_script(
+                """
+                try {
+                    const p = document.querySelector('.html5-video-player');
+                    if (p) {
+                        p.dispatchEvent(new MouseEvent('mousemove', {
+                            bubbles: true,
+                            clientX: 300,
+                            clientY: 300
+                        }));
+                    }
+                } catch(e) {}
+                """
+            )
+        except Exception:
+            pass
+
+        try:
+            el.click()
+            return True
+        except Exception:
+            pass
+
+        try:
+            driver.execute_script("arguments[0].click();", el)
+            return True
+        except Exception:
+            return False
+
+    button = find_cc_button()
+    if button is not None:
+        try:
+            pressed = (button.get_attribute("aria-pressed") or "").strip().lower()
+        except Exception:
+            pressed = ""
+
+        try:
+            label = (button.get_attribute("aria-label") or "").strip()
+        except Exception:
+            label = ""
+
+        print(
+            f"   🎛️ Nút CC tìm thấy"
+            f" | aria-pressed={pressed or '?'}"
+            f"{' | ' + label if label else ''}"
+        )
+
+        if pressed == "true":
+            # CC đã bật => phải OFF -> ON để ép request mới.
+            print("   🔁 CC đang BẬT -> toggle TẮT rồi BẬT lại để ép timedtext request mới...")
+
+            if not click_button(button):
+                print("   ⚠️ Không click được CC để tắt.")
+            else:
+                sleep(0.45)
+
+            # Re-acquire vì YouTube có thể re-render button.
+            button = find_cc_button() or button
+
+            # Xóa log phát sinh khi tắt CC; chỉ muốn bắt request sau lúc bật lại.
+            try:
+                clear_performance_logs(driver)
+            except Exception:
+                pass
+
+            if click_button(button):
+                sleep(0.35)
+                try:
+                    now_pressed = (button.get_attribute("aria-pressed") or "").strip().lower()
+                except Exception:
+                    now_pressed = ""
+                print(f"   ✅ Đã click BẬT lại CC | aria-pressed={now_pressed or '?'}")
+                return True
+
+            print("   ⚠️ Không click được CC để bật lại.")
+
+        else:
+            # CC đang tắt hoặc trạng thái chưa rõ -> bật luôn.
+            print("   ▶️ CC đang TẮT/chưa rõ -> click BẬT để trigger timedtext...")
+            if click_button(button):
+                sleep(0.35)
+                try:
+                    now_pressed = (button.get_attribute("aria-pressed") or "").strip().lower()
+                except Exception:
+                    now_pressed = ""
+                print(f"   ✅ Đã click CC | aria-pressed={now_pressed or '?'}")
+                return True
+
+            print("   ⚠️ Click nút CC thất bại.")
+
+    else:
+        print("   ⚠️ Không tìm thấy nút CC thật trên player.")
+
+    # Player API fallback nếu button không dùng được.
+    try:
+        api_triggered = driver.execute_script(
+            r"""
+            try {
+              const p = document.getElementById('movie_player');
+              if (!p) return false;
+
+              try {
+                if (typeof p.loadModule === 'function') p.loadModule('captions');
+              } catch(e) {}
+
+              try {
+                const list = (typeof p.getOption === 'function')
+                  ? (p.getOption('captions', 'tracklist') || [])
+                  : [];
+
+                if (Array.isArray(list) && list.length && typeof p.setOption === 'function') {
+                  // ép unload/reload track để tạo request mới
+                  try { p.setOption('captions', 'track', {}); } catch(e) {}
+                  try { p.setOption('captions', 'track', list[0]); } catch(e) {}
+                  return true;
+                }
+              } catch(e) {}
+
+              return false;
+            } catch(e) {
+              return false;
+            }
+            """
+        )
+
+        if api_triggered:
+            print("   ✅ Trigger captions bằng player API fallback.")
+            return True
+    except Exception:
+        pass
+
+    return False
+
+def capture_timedtext_json3_from_network(driver, expected_video_id=None, wait_seconds=10):
+    """
+    Bắt request /api/timedtext THẬT do chính YouTube player tạo ra.
+
+    Vì sao cần:
+    captionTracks.baseUrl đôi khi tồn tại nhưng fetch(baseUrl + fmt=json3) nhận HTTP 200
+    với body rỗng. Trong khi request thật của player có thể được bổ sung các tham số
+    động như POT/variant/client fields. Ta không hard-code chúng; chỉ bắt request thật.
+    """
+    clear_performance_logs(driver)
+
+    triggered = trigger_youtube_caption_request(driver)
+    print(
+        "   🎬 Đang bắt request timedtext THẬT từ YouTube player..."
+        + (" đã FORCE trigger CC." if triggered else " chưa trigger được CC; vẫn theo dõi network.")
+    )
+
+    deadline = time.time() + max(3, int(wait_seconds))
+    candidates = []
+    seen = set()
+
+    while time.time() < deadline:
+        try:
+            logs = driver.get_log("performance")
+        except Exception:
+            logs = []
+
+        for entry in logs:
+            try:
+                msg = json.loads(entry["message"])["message"]
+            except Exception:
+                continue
+
+            method = msg.get("method")
+            if method != "Network.responseReceived":
+                continue
+
+            params = msg.get("params") or {}
+            response = params.get("response") or {}
+            url = str(response.get("url") or "")
+            low = url.lower()
+
+            if "/api/timedtext" not in low and "timedtext?" not in low:
+                continue
+            if expected_video_id and f"v={expected_video_id.lower()}" not in low:
+                # Có thể browser còn request của video cũ.
+                continue
+
+            request_id = params.get("requestId")
+            if not request_id or request_id in seen:
+                continue
+            seen.add(request_id)
+
+            status = response.get("status")
+            mime = response.get("mimeType") or ""
+            candidates.append((url, status, mime))
+
+            try:
+                body_info = driver.execute_cdp_cmd(
+                    "Network.getResponseBody",
+                    {"requestId": request_id},
+                )
+                raw = _decode_cdp_body(body_info)
+            except Exception:
+                raw = ""
+
+            if raw.strip():
+                payload = _parse_json3_text(raw)
+                if payload is not None:
+                    print(
+                        f"   ✅ Bắt được timedtext network: HTTP={status} | "
+                        f"bytes={len(raw)} | mime={mime or '?'}"
+                    )
+                    return payload, None, url
+
+            # Nếu response body từ CDP chưa lấy được, thử fetch CHÍNH URL request thật.
+            if url:
+                payload, err = fetch_timedtext_json3(driver, url)
+                if payload is not None:
+                    print(
+                        f"   ✅ Fetch lại URL timedtext thật thành công: "
+                        f"HTTP={status} | mime={mime or '?'}"
+                    )
+                    return payload, None, url
+
+        sleep(0.12)
+
+    if candidates:
+        last_url, last_status, last_mime = candidates[-1]
+        return None, (
+            f"đã thấy {len(candidates)} request timedtext thật nhưng chưa lấy được body "
+            f"| HTTP cuối={last_status} | mime={last_mime or '?'}"
+        ), last_url
+
+    return None, "không thấy request /api/timedtext thật trong network sau khi trigger captions", None
 
 
 def extract_timedtext_json3_segments(payload):
@@ -2195,8 +2752,12 @@ def extract_timedtext_json3_segments(payload):
 def fetch_transcript_from_timedtext(driver):
     """
     Fallback cho video không có nút "Show transcript".
-    captionTracks/baseUrl được lấy ĐỘNG từ player của video đang mở,
-    sau đó fetch fmt=json3 bằng đúng session Chrome hiện tại.
+
+    Tầng A:
+      captionTracks.baseUrl -> fmt=json3.
+    Tầng B:
+      nếu A nhận body rỗng/lỗi, trigger CC rồi bắt request /api/timedtext THẬT
+      từ Network. Request thật thường có thêm token/params động của session.
     """
     tracks, error = collect_caption_tracks_from_player(driver)
     if not tracks:
@@ -2214,15 +2775,40 @@ def fetch_transcript_from_timedtext(driver):
         f"| tổng tracks={len(tracks)}"
     )
 
-    payload, error = fetch_timedtext_json3(driver, track.get("baseUrl"))
-    if payload is None:
-        return [], error
+    # A) Base URL từ player response.
+    payload, base_error = fetch_timedtext_json3(driver, track.get("baseUrl"))
+    if payload is not None:
+        segments = extract_timedtext_json3_segments(payload)
+        if segments:
+            return segments, None
+        base_error = "baseUrl JSON3 có response nhưng không parse được event có chữ"
 
-    segments = extract_timedtext_json3_segments(payload)
-    if not segments:
-        return [], "timedtext JSON3 có response nhưng không parse được event có chữ"
+    print(f"   ⚠️ baseUrl timedtext chưa có data: {base_error}")
+    print("   🔁 Timedtext tầng B: trigger caption + bắt request API thật từ Network...")
 
-    return segments, None
+    # B) Network request thật của chính player.
+    expected_video_id = None
+    try:
+        expected_video_id = video_id_from_url(safe_current_url(driver))
+    except Exception:
+        expected_video_id = None
+
+    payload2, network_error, actual_url = capture_timedtext_json3_from_network(
+        driver,
+        expected_video_id=expected_video_id,
+        wait_seconds=10,
+    )
+    if payload2 is not None:
+        segments = extract_timedtext_json3_segments(payload2)
+        if segments:
+            print(f"   ✅ Timedtext Network parse được {len(segments)} dòng.")
+            return segments, None
+        network_error = "request timedtext thật có body nhưng không parse được JSON3 events"
+
+    return [], (
+        f"baseUrl: {base_error}; network: {network_error}"
+        + (" | đã bắt được URL timedtext thật" if actual_url else "")
+    )
 
 
 
@@ -2298,7 +2884,7 @@ def get_transcript(driver, video_url):
     print("\n📝 Đang lấy transcript timestamp từ YouTube...")
     driver.get(video_url)
     wait_youtube_ready(driver)
-    sleep(2)
+    wait_youtube_player_bootstrap(driver, timeout=4.0)
 
     error = None
     source = None
@@ -3611,15 +4197,15 @@ def wait_for_chatgpt_answer(driver, previous_count):
                     last_text = text
                     stable_since = time.time()
 
-                # Kết thúc khi không còn nút Stop và text đã ổn định >= 3 giây.
+                # Kết thúc khi không còn nút Stop và text đã ổn định >= 2 giây.
                 if (
                     not generation_in_progress(driver)
                     and stable_since is not None
-                    and time.time() - stable_since >= 3.0
+                    and time.time() - stable_since >= 2.0
                 ):
                     return last_turn, text
 
-        sleep(0.5)
+        sleep(0.25)
 
     if last_turn is not None and last_text:
         print("⚠️ Hết thời gian đợi trạng thái hoàn tất, dùng text cuối đang có.")
@@ -4961,8 +5547,8 @@ def save_debug_files(video_url, title, transcript, answer=None, transcript_dir=N
 # ROBUST YT-DLP AUDIO DOWNLOAD - NO HANG / SABR FALLBACK
 # ============================================================
 
-DOWNLOAD_SOCKET_TIMEOUT = 15
-DOWNLOAD_ATTEMPT_TIMEOUT = 180  # timeout cứng cho MỖI lượt, tránh đứng vô hạn
+DOWNLOAD_SOCKET_TIMEOUT = 12
+DOWNLOAD_ATTEMPT_TIMEOUT = 120  # timeout cứng cho MỖI lượt, tránh đứng vô hạn
 
 
 def _kill_process_tree(proc):
@@ -5069,9 +5655,10 @@ def _run_ytdlp_audio_attempt(
         "--no-part",
         "--socket-timeout", str(DOWNLOAD_SOCKET_TIMEOUT),
         "--extractor-retries", "2",
-        "--retries", "3",
-        "--fragment-retries", "3",
+        "--retries", "2",
+        "--fragment-retries", "2",
         "--retry-sleep", "1",
+        "--concurrent-fragments", "3",
     ]
 
     if force_ipv4:
@@ -5300,27 +5887,49 @@ def process_one_video(
             append_failure(video_url, stage, "Không có/lấy không được transcript")
             return False
 
-        # Cookie live lấy sớm để metadata fallback và dùng lại ngay lúc download.
-        stage = "cookies"
-        cookie_session = export_fresh_youtube_cookies(
-            youtube_driver,
-            video_url=video_url,
-            cookie_file=LIVE_COOKIE_FILE,
-        )
-        cookie_path = cookie_session["path"] if cookie_session else None
-        browser_user_agent = cookie_session.get("user_agent") if cookie_session else None
+        # Không export cookie ngay ở đây nữa.
+        # Browser thường đã có title/channel/channel_id, nên ghi cookie 2 lần/video là phí.
+        cookie_path = None
+        browser_user_agent = None
 
         # ------------------------------------------------------------
         # STEP 2: METADATA + CHANNEL FOLDER.
         # ------------------------------------------------------------
         stage = "metadata"
-        print("\n⚡ BƯỚC METADATA: đọc trực tiếp từ tab YouTube; yt-dlp chỉ fallback có timeout...")
+        print("\n⚡ BƯỚC METADATA: ưu tiên đọc trực tiếp từ tab YouTube; không export cookie nếu chưa cần...")
         metadata = fetch_video_metadata(
             video_url,
             js_arguments,
             youtube_driver=youtube_driver,
-            cookie_file=cookie_path,
+            cookie_file=None,
         )
+
+        # Chỉ khi metadata thật sự thiếu channel/channel_id mới export cookie sớm để retry.
+        channel_id_probe = str(metadata.get("channel_id") or "")
+        channel_probe = str(metadata.get("channel") or metadata.get("uploader") or "")
+        if (
+            not channel_probe
+            or not channel_id_probe
+            or channel_id_probe.startswith("UNKNOWN_")
+            or channel_probe == "UNKNOWN_CHANNEL"
+        ):
+            print("   🍪 Metadata thiếu channel -> mới export cookie LIVE để retry metadata...")
+            stage = "cookies_for_metadata_retry"
+            cookie_session = export_fresh_youtube_cookies(
+                youtube_driver,
+                video_url=video_url,
+                cookie_file=LIVE_COOKIE_FILE,
+            )
+            if cookie_session:
+                cookie_path = cookie_session["path"]
+                browser_user_agent = cookie_session.get("user_agent")
+                metadata = fetch_video_metadata(
+                    video_url,
+                    js_arguments,
+                    youtube_driver=youtube_driver,
+                    cookie_file=cookie_path,
+                )
+
         title = metadata["title"]
         workspace = resolve_channel_workspace(metadata)
 
