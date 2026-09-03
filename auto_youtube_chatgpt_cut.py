@@ -980,6 +980,62 @@ def append_global_done_link(video_url):
         f.write(video_url + "\n")
 
 
+
+def load_unresolved_failed_set(done_set=None):
+    """
+    Trả về các URL từng FAIL nhưng CHƯA DONE.
+
+    failedLink.jsonl là log lịch sử append-only nên một link có thể vừa nằm trong
+    failedLink.jsonl vừa nằm trong doneLink.txt sau khi retry thành công.
+    Vì vậy phải lấy: FAILED - DONE.
+
+    Parser cố chịu được cả JSONL chuẩn lẫn vài dòng log cũ bị lỗi format.
+    """
+    done_set = set(done_set or load_global_done_set())
+    failed = set()
+
+    if not GLOBAL_FAILED_FILE.exists():
+        return failed
+
+    try:
+        with open(GLOBAL_FAILED_FILE, "r", encoding="utf-8-sig", errors="replace") as f:
+            for raw_line in f:
+                line = raw_line.strip()
+                if not line:
+                    continue
+
+                candidates = []
+
+                # JSONL chuẩn.
+                try:
+                    obj = json.loads(line)
+                    if isinstance(obj, dict):
+                        value = str(obj.get("url") or "").strip()
+                        if value:
+                            candidates.append(value)
+                except Exception:
+                    pass
+
+                # Fallback cho log cũ/malformed.
+                if not candidates:
+                    candidates.extend(
+                        re.findall(
+                            r'https?://(?:www\.)?(?:youtube\.com/watch\?v=[A-Za-z0-9_-]{6,}|youtu\.be/[A-Za-z0-9_-]{6,})[^\s"\'<>]*',
+                            line,
+                            flags=re.I,
+                        )
+                    )
+
+                for candidate in candidates:
+                    url = normalize_youtube_url(candidate)
+                    if url and url not in done_set:
+                        failed.add(url)
+    except OSError:
+        pass
+
+    return failed
+
+
 def append_failure(video_url, stage, error, channel_id="", title=""):
     record = {
         "time": time.strftime("%Y-%m-%d %H:%M:%S"),
@@ -6177,10 +6233,43 @@ def main():
         if not youtube_driver:
             return
 
-        success = 0
-        failed = 0
+        # ============================================================
+        # SCHEDULER 2 PHASE:
+        #   PHASE 1 = chỉ link MỚI/chưa từng fail
+        #   PHASE 2 = retry link fail SAU KHI phase 1 chạy hết
+        #
+        # Một link fail ở phase 1 chỉ được enqueue, KHÔNG retry ngay.
+        # Ở phase 2 mỗi link chỉ retry 1 lần trong run hiện tại.
+        # Nếu vẫn fail -> để lần chạy sau, không loop vô hạn.
+        # ============================================================
+        done_now = load_global_done_set()
+        historical_failed = load_unresolved_failed_set(done_now)
 
-        for index, video_url in enumerate(urls, start=1):
+        fresh_urls = [u for u in urls if u not in historical_failed]
+        retry_queue = [u for u in urls if u in historical_failed]
+        retry_seen = set(retry_queue)
+
+        print("\n" + "=" * 72)
+        print("📋 LỊCH XỬ LÝ LINK - ƯU TIÊN LINK MỚI")
+        print("=" * 72)
+        print(f"🆕 Link mới/chưa từng fail: {len(fresh_urls):,}")
+        print(f"⏳ Link fail cũ hoãn về cuối: {len(retry_queue):,}")
+        print("✅ Link fail trong lúc chạy sẽ KHÔNG retry ngay.")
+        print("🔁 Chỉ sau khi chạy hết link mới mới bắt đầu RETRY.")
+        print("=" * 72)
+
+        success_urls = set()
+        unresolved_urls = set()
+        fresh_failed_this_run = 0
+        retry_attempts = 0
+
+        def run_one_scheduled(video_url, display_index, display_total, phase_name):
+            nonlocal youtube_driver
+            nonlocal chatgpt_driver
+            nonlocal chatgpt_process
+            nonlocal current_project
+            nonlocal rotation_cursor
+
             # Chọn profile theo round-robin và nhớ cursor xuyên qua restart chương trình.
             target_index = rotation_cursor % len(rotation_targets)
             target = rotation_targets[target_index]
@@ -6190,7 +6279,8 @@ def main():
             print("\n" + "=" * 72)
             print(
                 f"🔁 ROUND ROBIN {target_index + 1}/{len(rotation_targets)} | "
-                f"VIDEO {index}/{len(urls)} -> {account['name']} [{account['key']}]"
+                f"{phase_name} {display_index}/{display_total} -> "
+                f"{account['name']} [{account['key']}]"
             )
             print(f"📂 Project: {project['name']}")
             print("=" * 72)
@@ -6208,7 +6298,6 @@ def main():
                     if not youtube_driver:
                         raise RuntimeError("Không recover được YouTube driver")
 
-                # Mỗi video đổi sang đúng Chrome profile kế tiếp.
                 chatgpt_driver, chatgpt_process, current_project = open_chatgpt_rotation_target(
                     account,
                     project,
@@ -6224,8 +6313,8 @@ def main():
                     video_url,
                     prompt_template,
                     js_arguments,
-                    index,
-                    len(urls),
+                    display_index,
+                    display_total,
                     chatgpt_project=current_project,
                 )
 
@@ -6236,8 +6325,8 @@ def main():
                 print(f"\n❌ Lỗi ngoài dự kiến với profile/video này: {exc}")
 
             finally:
-                # Quan trọng: lượt profile đã được dùng thì chuyển cursor sang profile kế tiếp,
-                # dù video thành công hay thất bại. Link lỗi vẫn không bị mark done và sẽ retry lần chạy sau.
+                # Mỗi ATTEMPT dùng xong một profile thì cursor đi tiếp,
+                # bất kể success/fail.
                 rotation_cursor = (target_index + 1) % len(rotation_targets)
                 save_chatgpt_round_robin_cursor(rotation_cursor)
 
@@ -6247,16 +6336,91 @@ def main():
                     chatgpt_process = None
                     current_project = None
 
+            return ok
+
+        # ------------------------------------------------------------
+        # PHASE 1: CHỈ LINK MỚI.
+        # ------------------------------------------------------------
+        if fresh_urls:
+            print("\n" + "#" * 72)
+            print("🆕 PHASE 1/2 - CHẠY TOÀN BỘ LINK MỚI TRƯỚC")
+            print("#" * 72)
+
+        for index, video_url in enumerate(fresh_urls, start=1):
+            ok = run_one_scheduled(
+                video_url,
+                index,
+                len(fresh_urls),
+                "LINK MỚI",
+            )
+
             if ok:
-                success += 1
+                success_urls.add(video_url)
+                unresolved_urls.discard(video_url)
             else:
-                failed += 1
-                print("⏭️ Link chưa xong; chuyển sang link tiếp theo.")
+                fresh_failed_this_run += 1
+                unresolved_urls.add(video_url)
+
+                # Hoãn về cuối; không retry ngay.
+                if video_url not in retry_seen:
+                    retry_seen.add(video_url)
+                    retry_queue.append(video_url)
+
+                print(
+                    "⏭️ Link FAIL -> ĐÃ HOÃN RETRY VỀ CUỐI. "
+                    "Tiếp tục link mới kế tiếp."
+                )
+
+        # ------------------------------------------------------------
+        # PHASE 2: RETRY FAIL SAU KHI HẾT LINK MỚI.
+        # historical failed + fresh failures, mỗi URL đúng 1 lượt.
+        # ------------------------------------------------------------
+        if retry_queue:
+            print("\n" + "#" * 72)
+            print("🔁 PHASE 2/2 - ĐÃ HẾT LINK MỚI, BẮT ĐẦU RETRY LINK FAIL")
+            print(f"📦 Tổng link cần retry: {len(retry_queue):,}")
+            print("⚠️ Mỗi link chỉ retry 1 lần trong run này; fail nữa để lần chạy sau.")
+            print("#" * 72)
+
+        for retry_index, video_url in enumerate(retry_queue, start=1):
+            # Có thể link đã thành công ở phase 1 qua recovery bên trong process,
+            # hoặc được mark DONE từ tác vụ khác; bỏ qua nếu giờ đã done.
+            if video_url in load_global_done_set():
+                print(
+                    f"⏭️ RETRY {retry_index}/{len(retry_queue)} đã DONE trước lượt retry -> bỏ qua."
+                )
+                success_urls.add(video_url)
+                unresolved_urls.discard(video_url)
+                continue
+
+            retry_attempts += 1
+            ok = run_one_scheduled(
+                video_url,
+                retry_index,
+                len(retry_queue),
+                "RETRY",
+            )
+
+            if ok:
+                success_urls.add(video_url)
+                unresolved_urls.discard(video_url)
+                print("✅ RETRY thành công.")
+            else:
+                unresolved_urls.add(video_url)
+                print(
+                    "❌ RETRY vẫn fail -> KHÔNG chạy lại lần nữa trong run này. "
+                    "Để dành cho lần chạy sau."
+                )
+
+        success = len(success_urls)
+        failed = len(unresolved_urls)
 
         print("\n" + "=" * 72)
         print("KẾT QUẢ")
         print(f"✅ Thành công: {success}")
-        print(f"❌ Thất bại: {failed}")
+        print(f"❌ Thất bại còn lại: {failed}")
+        print(f"⏳ Fail phát sinh ở phase link mới: {fresh_failed_this_run}")
+        print(f"🔁 Số lượt retry cuối batch: {retry_attempts}")
         print(f"🔄 Profile kế tiếp khi chạy lại: {rotation_targets[rotation_cursor]['account']['name']}")
         print(f"📁 Video: {CHANNELS_DIR} / <CHANNEL NAME _ CHANNEL ID> / done")
         print(f"📝 Transcript: {CHANNELS_DIR} / <CHANNEL NAME _ CHANNEL ID> / transcripts")
