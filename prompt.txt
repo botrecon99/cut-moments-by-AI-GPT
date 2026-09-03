@@ -1,0 +1,216 @@
+Hãy phân tích toàn bộ transcript có mốc thời gian bên dưới.
+
+Mục tiêu duy nhất của bước này:
+
+Loại bỏ toàn bộ nội dung thừa không thuộc NỘI DUNG CHÍNH của video.
+
+Sau khi áp dụng các mốc cắt, audio còn lại phải là một nội dung hoàn chỉnh, liền mạch, tự nhiên và có thể nghe độc lập từ đầu đến cuối.
+
+NỘI DUNG CHÍNH có thể là bất kỳ dạng nào, ví dụ:
+
+- Kể chuyện.
+- Bài giảng.
+- Cầu nguyện.
+- Nội dung tôn giáo.
+- Motivational speech.
+- Commentary.
+- Podcast.
+- Phân tích.
+- Documentary.
+- Tin tức.
+- Nội dung giáo dục.
+- Một hoặc nhiều chủ đề chính liên tục trong video.
+
+TUYỆT ĐỐI KHÔNG được xóa nội dung chỉ vì nó không phải là một “câu chuyện”.
+
+## PHẦN PHẢI CẮT
+
+Cắt bỏ nếu xuất hiện:
+
+- Intro mở đầu không thuộc nội dung chính.
+- Teaser hoặc nhá hàng trước nội dung chính.
+- Giới thiệu kênh hoặc series chỉ để branding.
+- Logo âm thanh, jingle, bumper hoặc branding.
+- Tên kênh nếu chỉ được nhắc để quảng bá thương hiệu.
+- Tên narrator, host, người đọc hoặc YouTuber nếu chỉ xuất hiện trong phần tự giới thiệu/branding.
+- Quảng cáo.
+- Sponsor.
+- Merchandise.
+- Patreon.
+- Membership.
+- Affiliate.
+- Kêu gọi subscribe, like, comment, share hoặc follow.
+- Thông báo lịch đăng video.
+- Thông báo dự án hoặc chuyện cá nhân không liên quan nội dung chính.
+- Cảm ơn người xem sau khi nội dung chính đã kết thúc.
+- Lời chào kết thúc.
+- Outro.
+- Credit.
+- Nội dung hậu kỳ.
+- Trailer cho video khác.
+- Nội dung lặp lại không cần thiết sau khi nội dung chính đã hoàn tất.
+- Đoạn chuyển cảnh hoặc nhạc dài không có nội dung cần giữ.
+- Bất kỳ phần nào rõ ràng không liên quan đến nội dung chính.
+
+## QUY TẮC TÊN RIÊNG VÀ BRANDING
+
+Phải phân biệt tên dùng để branding với tên thực sự thuộc nội dung.
+
+Ví dụ:
+
+00:00:00 “Hi everyone, my name is John and welcome back to Prayer Channel.”
+
+Nếu đây chỉ là phần tự giới thiệu/branding thì cắt.
+
+Nhưng:
+
+00:05:10 “My husband John called me that night.”
+
+Phải giữ vì John là thông tin thuộc nội dung chính.
+
+Tên người, địa điểm, công ty, trường học, tổ chức hoặc nhân vật phải được giữ nếu cần để hiểu nội dung.
+
+## PHẦN PHẢI GIỮ
+
+Phải giữ toàn bộ nội dung chính của video.
+
+Nếu video là bài giảng:
+
+→ Giữ toàn bộ bài giảng.
+
+Nếu video là cầu nguyện:
+
+→ Giữ toàn bộ lời cầu nguyện.
+
+Nếu video gồm bài giảng rồi chuyển sang cầu nguyện:
+
+→ Giữ cả bài giảng và phần cầu nguyện nếu cả hai đều thuộc nội dung chính.
+
+Nếu video là motivational speech, commentary, podcast, documentary, phân tích hoặc giáo dục:
+
+→ Giữ toàn bộ phần nội dung liên quan trực tiếp đến chủ đề chính.
+
+Nếu video là kể chuyện:
+
+→ Giữ phần mở đầu câu chuyện, bối cảnh, nhân vật, diễn biến, hội thoại, kết luận và update liên quan.
+
+Ngoài ra không được cắt:
+
+- Lời dẫn cần thiết để hiểu nội dung.
+- Tiêu đề được đọc lên nếu liên quan trực tiếp.
+- Phần giới thiệu chủ đề chính.
+- Phần giới thiệu nhân vật, thời gian, địa điểm hoặc bối cảnh.
+- Giải thích, phân tích và ví dụ minh họa liên quan.
+- Trích dẫn.
+- Đọc Kinh Thánh hoặc tài liệu nếu thuộc bài giảng/cầu nguyện/chủ đề chính.
+- Hội thoại.
+- Bằng chứng.
+- Video hoặc audio tư liệu liên quan.
+- Nhận xét của narrator liên quan trực tiếp.
+- Phần kết luận.
+- Lời cầu nguyện kết thúc nếu vẫn là nội dung chính.
+- Câu chuyển tiếp cần thiết.
+- Nhạc nền khi vẫn có nội dung chính đang được nói.
+
+Không được thấy chữ “music” rồi tự động cắt.
+
+## NGUYÊN TẮC CỰC KỲ QUAN TRỌNG
+
+Mục tiêu là LOẠI PHẦN THỪA, không phải cố tìm thứ để cắt.
+
+Nếu toàn bộ video từ đầu đến cuối đều là nội dung chính và không có intro, outro, quảng cáo, branding, CTA hoặc phần thừa:
+
+KHÔNG ĐƯỢC tự tạo mốc cắt.
+
+Phải trả:
+
+NONE
+DONE
+
+Không được cắt toàn bộ video chỉ vì video không phải dạng kể chuyện.
+
+Ví dụ: video gồm 20 phút bài giảng + cầu nguyện liên tục, không có quảng cáo, CTA hoặc outro riêng:
+
+→ Giữ toàn bộ.
+
+Nếu đầu video có:
+
+00:00:00 “Welcome back to Grace Channel, please subscribe...”
+00:00:25 “Today I want to talk to you about faith...”
+
+thì cắt:
+
+00:00:00 --> 00:00:25
+
+và giữ từ 00:00:25 trở đi.
+
+Nếu nội dung chính kết thúc tại:
+
+00:18:53 “You are faithful, Lord. Amen.”
+
+và từ:
+
+00:18:59
+
+trở đi chỉ còn quảng cáo, CTA, outro hoặc nội dung lặp không cần thiết thì có thể cắt:
+
+00:18:59 --> END
+
+Nhưng nếu sau 00:18:59 vẫn tiếp tục đọc Kinh Thánh, giảng giải, cầu nguyện hoặc nội dung liên quan trực tiếp đến chủ đề chính thì PHẢI GIỮ.
+
+Không được coi một đoạn là outro chỉ vì trước đó có chữ “Amen”.
+
+## QUY TẮC TIMESTAMP
+
+Chỉ sử dụng timestamp có thật trong transcript.
+
+Không tự bịa timestamp.
+
+Luôn xuất đầy đủ định dạng:
+
+HH:MM:SS --> HH:MM:SS
+
+Ví dụ:
+
+00:00:00 --> 00:00:42
+00:18:31 --> 00:19:12
+01:03:44 --> END
+
+Nếu các đoạn cần cắt liền nhau hoặc chồng lên nhau thì gộp thành một đoạn.
+
+Không liệt kê những đoạn được giữ.
+
+## ĐỊNH DẠNG KẾT QUẢ BẮT BUỘC
+
+Chỉ xuất danh sách các đoạn CẦN CẮT BỎ.
+
+Ví dụ:
+
+00:00:00 --> 00:00:42
+00:18:31 --> 00:19:12
+01:03:44 --> END
+DONE
+
+Nếu không có phần thừa nào:
+
+NONE
+DONE
+
+## QUY TẮC ĐẦU RA
+
+Không viết tiêu đề.
+Không viết giải thích.
+Không ghi lý do.
+Không tóm tắt nội dung.
+Không viết chapter.
+Không dùng bullet point trong kết quả.
+Không dùng Markdown code block.
+Không thêm lời mở đầu.
+Không thêm lời kết.
+Không thêm bất kỳ nội dung nào sau DONE.
+
+Toàn bộ câu trả lời phải có thể copy trực tiếp vào console của chương trình.
+
+## TRANSCRIPT CẦN PHÂN TÍCH
+
+[DÁN TOÀN BỘ TRANSCRIPT VÀO ĐÂY]

@@ -1,0 +1,180 @@
+# ============================================================
+# Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+ENV/
+
+# ============================================================
+# IDE / OS
+# ============================================================
+.vscode/
+.idea/
+*.code-workspace
+
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ============================================================
+# CHROME / BROWSER PROFILES - TUYỆT ĐỐI KHÔNG PUSH
+# Chứa cookie, session đăng nhập, cache...
+# ============================================================
+chrome_profiles/
+**/chrome_profiles/
+
+# Chrome / Selenium runtime
+SingletonCookie
+SingletonLock
+SingletonSocket
+DevToolsActivePort
+
+# ============================================================
+# COOKIES / SESSION / SECRETS
+# ============================================================
+cookies.txt
+*cookies*.txt
+youtube_live_cookies.txt
+*.cookie
+*.cookies
+
+# Nếu có file chứa token / secret riêng
+.env
+.env.*
+!.env.example
+secrets.json
+credentials.json
+token.json
+
+# ============================================================
+# VIDEO / AUDIO / MEDIA - KHÔNG ĐẨY LÊN GIT
+# ============================================================
+*.mp3
+*.m4a
+*.aac
+*.wav
+*.flac
+*.ogg
+*.opus
+
+*.mp4
+*.mkv
+*.webm
+*.mov
+*.avi
+*.m4v
+*.ts
+*.m2ts
+
+# Subtitle / caption raw nếu chỉ là dữ liệu sinh ra
+*.vtt
+*.srt
+
+# ============================================================
+# PIPELINE OUTPUT / TEMP DATA
+# ============================================================
+downloads/
+output/
+outputs/
+done/
+_cut_work/
+temp/
+tmp/
+cache/
+
+channels/
+transcripts/
+ai_results/
+ai_inputs/
+logs/
+runtime/
+
+# Các thư mục có thể nằm sâu hơn
+**/downloads/
+**/output/
+**/outputs/
+**/done/
+**/_cut_work/
+**/temp/
+**/tmp/
+**/cache/
+**/channels/
+**/transcripts/
+**/ai_results/
+**/ai_inputs/
+**/logs/
+**/runtime/
+
+# ============================================================
+# PIPELINE STATE / GENERATED DATA
+# ============================================================
+doneLink.txt
+failedLink.jsonl
+no_story.txt
+youtube_live_cookies.txt
+channel_index.json
+retry_failed.txt
+
+# Backup/runtime files
+*.bak
+*.backup
+*.tmp
+*.part
+*.ytdl
+*.download
+
+# ============================================================
+# LARGE / GENERATED ARCHIVES
+# ============================================================
+*.zip
+*.7z
+*.rar
+*.tar
+*.gz
+
+# ============================================================
+# OPTIONAL: input list có thể chứa URL riêng của bạn
+# Bỏ dấu # nếu KHÔNG muốn public list.txt
+# ============================================================
+list.txt
+
+# ============================================================
+# LOCAL ACCOUNT / PROJECT CONFIG
+# Có thể chứa URL Project hoặc cấu hình cá nhân
+# Nếu muốn public file mẫu, tạo chatgpt_accounts.example.json
+# ============================================================
+chatgpt_accounts.json
+
+# ============================================================
+# LOCAL BINARIES / TOOLS
+# ============================================================
+ffmpeg.exe
+ffprobe.exe
+yt-dlp.exe
+node.exe
+deno.exe
+
+# ============================================================
+# KEEP EXAMPLES / SOURCE
+# ============================================================
+!README*.txt
+!README*.md
+!*.py
+!*.bat
+!*.cmd
+!*.ps1
+!prompt.txt
+!*.example.json
+!*.example.txt
