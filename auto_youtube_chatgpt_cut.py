@@ -516,17 +516,48 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
             )
 
     # Xóa draft mà ChatGPT có thể restore ở Project page.
-    clear_chatgpt_composer(composer)
-    sleep(0.3)
-    composer = find_chatgpt_composer(driver) or composer
+    # Không coi draft cũ là lỗi login. Tự xóa nhiều lớp trước.
     residual = _loose_compare_text(get_chatgpt_composer_text(driver, composer))
     if residual:
+        print(f"🧹 Project restore draft cũ ({len(residual)} chars) -> đang tự xóa...")
+
+    for clear_try in range(1, 5):
+        composer = find_chatgpt_composer(driver) or composer
         clear_chatgpt_composer(composer)
-        sleep(0.3)
+        sleep(0.35)
         composer = find_chatgpt_composer(driver) or composer
         residual = _loose_compare_text(get_chatgpt_composer_text(driver, composer))
+        if not residual:
+            if clear_try > 1:
+                print(f"✅ Đã tự xóa draft Project ở lượt {clear_try}/4.")
+            break
+        print(f"   ⚠️ Draft vẫn còn {len(residual)} chars sau clear {clear_try}/4.")
+
+    # Một số phiên ChatGPT restore draft muộn sau navigation.
+    # Refresh Project đúng 1 lần rồi clear lại, thay vì bắt user login vô lý.
     if residual:
-        raise RuntimeError(f"Composer Project còn draft cũ ({len(residual)} chars)")
+        print("🔄 Draft bị restore lại -> refresh Project 1 lần rồi tự xóa tiếp...")
+        try:
+            driver.get(target)
+            WebDriverWait(driver, min(timeout, 45)).until(lambda d: find_chatgpt_composer(d))
+            sleep(0.8)
+            composer = find_chatgpt_composer(driver)
+            for clear_try in range(1, 4):
+                clear_chatgpt_composer(composer)
+                sleep(0.4)
+                composer = find_chatgpt_composer(driver) or composer
+                residual = _loose_compare_text(get_chatgpt_composer_text(driver, composer))
+                if not residual:
+                    print("✅ Draft Project đã được xóa sau refresh.")
+                    break
+        except Exception:
+            pass
+
+    if residual:
+        raise RuntimeError(
+            f"Composer Project còn draft cũ ({len(residual)} chars) sau AUTO-CLEAR; "
+            "đây không phải lỗi login."
+        )
 
     print("✅ Đúng Project + composer sạch. Sẵn sàng tạo chat mới.")
     return composer
@@ -1034,6 +1065,7 @@ def create_youtube_driver():
     options.set_capability("goog:loggingPrefs", {"performance": "ALL"})
 
     print("🚀 Mở Chrome YouTube bằng Selenium...")
+    print(f"🌐 Chrome binary: {CHROME_BINARY}")
     print(f"📁 YouTube profile: {YOUTUBE_USER_DATA_DIR}\\{PROFILE_DIRECTORY}")
 
     try:
@@ -1205,12 +1237,19 @@ def wait_manual_chatgpt_login_before_attach():
 def attach_chatgpt_driver():
     """Chỉ gọi SAU KHI người dùng đã login/xác minh ChatGPT bằng tay."""
     options = webdriver.ChromeOptions()
+
+    # QUAN TRỌNG: chỉ rõ Chrome binary cả khi ATTACH.
+    # Một số máy Chrome có ở Program Files nhưng không nằm trong PATH (`where chrome` không thấy).
+    # Nếu thiếu dòng này Selenium Manager có thể tưởng máy chưa có Chrome và báo cài Chrome/browser.
+    options.binary_location = CHROME_BINARY
+
     options.add_experimental_option(
         "debuggerAddress",
         f"{CHATGPT_DEBUG_HOST}:{CHATGPT_DEBUG_PORT}",
     )
 
     print("🔗 Đang attach Selenium vào Chrome ChatGPT đã login...")
+    print(f"🌐 Chrome binary: {CHROME_BINARY}")
 
     try:
         driver = webdriver.Chrome(options=options)
@@ -1455,14 +1494,33 @@ def restart_chatgpt_browser(chatgpt_driver, chatgpt_process, chatgpt_project):
             print("✅ Restart ChatGPT xong, đã quay lại đúng Project.")
             return new_driver, new_process
         except Exception as exc:
-            print(f"⚠️ Chrome mở lại nhưng chưa vào được Project/composer: {exc}")
+            err_text = str(exc)
+            print(f"⚠️ Chrome mở lại nhưng chưa vào được Project/composer: {err_text}")
+
+            # Draft Project không phải logout/Cloudflare.
+            # Đừng bắt người dùng ENTER/login sai nguyên nhân.
+            if "draft cũ" in err_text.lower():
+                print("🧹 Đây là draft Project bị restore, KHÔNG phải logout.")
+                try:
+                    # Thử lại ngay trên browser hiện tại thêm một lần.
+                    sleep(1.0)
+                    open_chatgpt_project_new_chat(
+                        new_driver,
+                        chatgpt_project,
+                        timeout=WAIT_CHATGPT_READY,
+                    )
+                    print("✅ Tự xử lý draft xong sau restart.")
+                    return new_driver, new_process
+                except Exception as retry_exc:
+                    print(f"⚠️ Auto-clear draft sau restart vẫn chưa được: {retry_exc}")
+
             try:
                 new_driver.quit()
             except Exception:
                 pass
             new_driver = None
 
-    # Chỉ khi login/Cloudflare/session có vấn đề mới yêu cầu người dùng can thiệp.
+    # Chỉ khi thật sự không còn composer/session usable mới yêu cầu người dùng can thiệp.
     print("⚠️ Cần đăng nhập/xác minh ChatGPT lại bằng tay.")
     if not chatgpt_debug_port_ready():
         new_process = launch_chatgpt_manual_chrome(start_url)
@@ -2628,14 +2686,168 @@ def read_clipboard_text_windows():
 
 
 def clear_chatgpt_composer(composer):
-    """Xóa sạch nội dung composer trước khi nhập prompt mới."""
+    """
+    Xóa draft ChatGPT thật sự, kể cả khi Project tự restore draft cũ.
+
+    Bản cũ chỉ Ctrl+A -> Backspace một lần. Với ProseMirror/React, thao tác đó
+    đôi khi chỉ xóa DOM tạm hoặc không cập nhật state nên khi mở Project lại,
+    draft 5k ký tự xuất hiện lại.
+
+    Bản này dùng nhiều lớp:
+      1) Selenium Ctrl+A/Backspace.
+      2) ActionChains Ctrl+A/Backspace.
+      3) JS selectAll + execCommand(delete) + InputEvent.
+      4) Nếu vẫn còn: ép contenteditable/textarea rỗng + dispatch input/change.
+    """
+    if composer is None:
+        return False
+
+    try:
+        driver = composer.parent
+    except Exception:
+        driver = None
+
+    def _visible_text(el):
+        try:
+            tag = (el.tag_name or "").lower()
+            if tag == "textarea":
+                return (el.get_attribute("value") or "").strip()
+            return (el.text or el.get_attribute("innerText") or el.get_attribute("textContent") or "").strip()
+        except Exception:
+            return ""
+
+    # 1) Cách native đơn giản.
     try:
         composer.click()
         composer.send_keys(Keys.CONTROL, "a")
         composer.send_keys(Keys.BACKSPACE)
-        sleep(0.2)
+        sleep(0.15)
+        if not _visible_text(composer):
+            return True
     except Exception:
         pass
+
+    # 2) ActionChains thường ổn hơn với ProseMirror.
+    if driver is not None:
+        try:
+            ActionChains(driver).move_to_element(composer).click().key_down(Keys.CONTROL).send_keys("a").key_up(Keys.CONTROL).send_keys(Keys.BACKSPACE).perform()
+            sleep(0.15)
+            if not _visible_text(composer):
+                return True
+        except Exception:
+            pass
+
+    # 3) Xóa bằng Selection + execCommand để React nhận thao tác như edit thật.
+    if driver is not None:
+        try:
+            driver.execute_script(
+                r"""
+                const el = arguments[0];
+                try { el.focus(); } catch(e) {}
+
+                const tag = (el.tagName || '').toLowerCase();
+
+                if (tag === 'textarea' || tag === 'input') {
+                    try {
+                        el.select();
+                        document.execCommand('delete');
+                    } catch(e) {}
+                    try {
+                        const setter = Object.getOwnPropertyDescriptor(
+                            tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+                            'value'
+                        ).set;
+                        setter.call(el, '');
+                    } catch(e) {
+                        el.value = '';
+                    }
+                    el.dispatchEvent(new InputEvent('input', {
+                        bubbles: true,
+                        composed: true,
+                        inputType: 'deleteContentBackward',
+                        data: null
+                    }));
+                    el.dispatchEvent(new Event('change', {bubbles: true}));
+                    return;
+                }
+
+                try {
+                    const sel = window.getSelection();
+                    const range = document.createRange();
+                    range.selectNodeContents(el);
+                    sel.removeAllRanges();
+                    sel.addRange(range);
+                    document.execCommand('delete', false, null);
+                    sel.removeAllRanges();
+                } catch(e) {}
+
+                el.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    composed: true,
+                    inputType: 'deleteContentBackward',
+                    data: null
+                }));
+                """,
+                composer,
+            )
+            sleep(0.2)
+            if not _visible_text(composer):
+                return True
+        except Exception:
+            pass
+
+    # 4) Lớp cuối: ép DOM rỗng + phát event để state editor đồng bộ.
+    if driver is not None:
+        try:
+            driver.execute_script(
+                r"""
+                const el = arguments[0];
+                const tag = (el.tagName || '').toLowerCase();
+                try { el.focus(); } catch(e) {}
+
+                if (tag === 'textarea' || tag === 'input') {
+                    try {
+                        const setter = Object.getOwnPropertyDescriptor(
+                            tag === 'textarea' ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype,
+                            'value'
+                        ).set;
+                        setter.call(el, '');
+                    } catch(e) {
+                        el.value = '';
+                    }
+                } else {
+                    el.innerHTML = '<p><br></p>';
+                    try {
+                        const sel = window.getSelection();
+                        sel.removeAllRanges();
+                        const range = document.createRange();
+                        range.selectNodeContents(el);
+                        range.collapse(true);
+                        sel.addRange(range);
+                    } catch(e) {}
+                }
+
+                el.dispatchEvent(new InputEvent('beforeinput', {
+                    bubbles: true,
+                    composed: true,
+                    inputType: 'deleteContentBackward',
+                    data: null
+                }));
+                el.dispatchEvent(new InputEvent('input', {
+                    bubbles: true,
+                    composed: true,
+                    inputType: 'deleteContentBackward',
+                    data: null
+                }));
+                el.dispatchEvent(new Event('change', {bubbles: true}));
+                """,
+                composer,
+            )
+            sleep(0.25)
+        except Exception:
+            pass
+
+    return not bool(_visible_text(composer))
 
 
 def get_chatgpt_composer_text(driver, composer=None):
@@ -4744,6 +4956,320 @@ def save_debug_files(video_url, title, transcript, answer=None, transcript_dir=N
 # ============================================================
 
 
+
+# ============================================================
+# ROBUST YT-DLP AUDIO DOWNLOAD - NO HANG / SABR FALLBACK
+# ============================================================
+
+DOWNLOAD_SOCKET_TIMEOUT = 15
+DOWNLOAD_ATTEMPT_TIMEOUT = 180  # timeout cứng cho MỖI lượt, tránh đứng vô hạn
+
+
+def _kill_process_tree(proc):
+    """Dừng yt-dlp và toàn bộ process con nếu một lượt bị treo."""
+    if proc is None:
+        return
+    try:
+        if proc.poll() is not None:
+            return
+    except Exception:
+        return
+
+    try:
+        if os.name == "nt":
+            subprocess.run(
+                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                timeout=10,
+            )
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
+def _find_downloaded_audio():
+    """
+    Ưu tiên helper của story_cutter_core để giữ tương thích.
+    Nếu helper không có/không thấy file thì tự quét DOWNLOAD_DIR.
+    """
+    try:
+        p = cutter.find_raw_video()
+        if p:
+            return Path(p)
+    except Exception:
+        pass
+
+    download_dir = Path(cutter.DOWNLOAD_DIR)
+    candidates = []
+    for ext in (".mp3", ".m4a", ".webm", ".opus", ".ogg", ".aac", ".wav", ".mp4"):
+        candidates.extend(download_dir.glob(f"raw_audio*{ext}"))
+        candidates.extend(download_dir.glob(f"raw_video*{ext}"))
+
+    candidates = [p for p in candidates if p.is_file() and p.stat().st_size > 0]
+    if not candidates:
+        return None
+    return max(candidates, key=lambda p: p.stat().st_mtime)
+
+
+def _delete_old_download_audio():
+    try:
+        cutter.delete_old_raw_files()
+        return
+    except Exception:
+        pass
+
+    download_dir = Path(cutter.DOWNLOAD_DIR)
+    for pat in ("raw_audio*", "raw_video*"):
+        for p in download_dir.glob(pat):
+            try:
+                if p.is_file():
+                    p.unlink()
+            except Exception:
+                pass
+
+
+def _run_ytdlp_audio_attempt(
+    video_url,
+    js_arguments,
+    *,
+    cookie_file=None,
+    user_agent=None,
+    extractor_args=None,
+    force_ipv4=True,
+    format_selector="bestaudio",
+    label="yt-dlp",
+):
+    """
+    Chạy 1 lượt yt-dlp có:
+    - socket timeout ngắn để không kẹt ở Downloading webpage
+    - timeout cứng toàn lượt
+    - chỉ tải AUDIO; không fallback sang video/combined format
+    """
+    _delete_old_download_audio()
+
+    download_dir = Path(cutter.DOWNLOAD_DIR)
+    download_dir.mkdir(parents=True, exist_ok=True)
+    output_template = str(download_dir / "raw_audio.%(ext)s")
+
+    cmd = [
+        *cutter.YTDLP_CMD,
+        "--ignore-config",
+        "--no-plugin-dirs",
+        *js_arguments,
+        "--remote-components", "ejs:github",
+        "--no-playlist",
+        "--geo-bypass",
+        "--windows-filenames",
+        "--force-overwrites",
+        "--no-part",
+        "--socket-timeout", str(DOWNLOAD_SOCKET_TIMEOUT),
+        "--extractor-retries", "2",
+        "--retries", "3",
+        "--fragment-retries", "3",
+        "--retry-sleep", "1",
+    ]
+
+    if force_ipv4:
+        cmd.append("--force-ipv4")
+
+    if cookie_file:
+        cp = Path(cookie_file)
+        if cp.exists() and cp.stat().st_size > 0:
+            cmd.extend(["--cookies", str(cp)])
+
+    if user_agent:
+        cmd.extend(["--user-agent", str(user_agent)])
+
+    if extractor_args:
+        cmd.extend(["--extractor-args", str(extractor_args)])
+
+    cmd.extend([
+        "-f", format_selector,
+        "--extract-audio",
+        "--audio-format", "mp3",
+        "--audio-quality", "128K",
+        "-o", output_template,
+        video_url,
+    ])
+
+    print(f"\n⬇️ {label}")
+    if cookie_file:
+        print(f"   🍪 Cookie LIVE: {cookie_file}")
+    else:
+        print("   🍪 Cookie: KHÔNG DÙNG")
+
+    if extractor_args:
+        print(f"   🧩 Extractor args: {extractor_args}")
+
+    print(f"   🎵 AUDIO ONLY: {format_selector} -> MP3 | KHÔNG tải video MP4")
+    print(f"   🌐 IPv4 bắt buộc: {'CÓ' if force_ipv4 else 'KHÔNG'}")
+    print(
+        f"   ⏱️ Socket timeout={DOWNLOAD_SOCKET_TIMEOUT}s | "
+        f"timeout cứng/lượt={DOWNLOAD_ATTEMPT_TIMEOUT}s"
+    )
+
+    proc = None
+    try:
+        # Không capture stdout/stderr: log yt-dlp vẫn hiện realtime trong console.
+        proc = subprocess.Popen(cmd, cwd=str(BASE_DIR))
+        return_code = proc.wait(timeout=DOWNLOAD_ATTEMPT_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        print(
+            f"   ⏱️ Lượt này quá {DOWNLOAD_ATTEMPT_TIMEOUT}s -> "
+            "TỰ DỪNG yt-dlp và chuyển fallback, không đứng vô hạn."
+        )
+        _kill_process_tree(proc)
+        _delete_old_download_audio()
+        return None
+    except KeyboardInterrupt:
+        _kill_process_tree(proc)
+        raise
+    except Exception as exc:
+        print(f"   ⚠️ Không chạy được yt-dlp: {type(exc).__name__}: {exc}")
+        _kill_process_tree(proc)
+        _delete_old_download_audio()
+        return None
+
+    if return_code != 0:
+        _delete_old_download_audio()
+        return None
+
+    raw = _find_downloaded_audio()
+    if not raw:
+        return None
+
+    try:
+        duration = cutter.get_video_duration(raw)
+    except Exception:
+        duration = None
+
+    if not duration or duration <= 0:
+        print("   ⚠️ File tải xong nhưng ffprobe không đọc được duration.")
+        _delete_old_download_audio()
+        return None
+
+    return raw
+
+
+def robust_download_audio(
+    video_url,
+    js_arguments,
+    original_title,
+    cookie_file=None,
+    user_agent=None,
+):
+    """
+    Downloader mới:
+    - Ưu tiên audio-only.
+    - Chỉ tải audio-only. Nếu YouTube không cấp audio-only URL thì lượt đó fail và chuyển client khác.
+    - Không để một lượt treo vô hạn.
+    - Cookie LIVE và public đều được thử.
+    """
+    try:
+        if cutter.can_reuse_existing_video(video_url):
+            raw = _find_downloaded_audio()
+            if raw:
+                duration = cutter.get_video_duration(raw)
+                if duration and duration > 0:
+                    print("\n✅ Audio thô đúng link đã tồn tại; dùng lại.")
+                    print(f"📁 {raw}")
+                    return raw
+    except Exception:
+        pass
+
+    live_cookie = None
+    if cookie_file:
+        cp = Path(cookie_file)
+        if cp.exists() and cp.stat().st_size > 0:
+            live_cookie = cp
+
+    attempts = []
+
+    if live_cookie:
+        attempts.extend([
+            # Audio-only trước.
+            dict(
+                cookie_file=live_cookie,
+                user_agent=user_agent,
+                extractor_args=None,
+                force_ipv4=True,
+                format_selector="bestaudio[ext=m4a]/bestaudio",
+                label="COOKIE LIVE + default + audio/best fallback",
+            ),
+            # Web variants.
+            dict(
+                cookie_file=live_cookie,
+                user_agent=user_agent,
+                extractor_args="youtube:player_client=web,web_embedded",
+                force_ipv4=True,
+                format_selector="bestaudio",
+                label="COOKIE LIVE + web,web_embedded",
+            ),
+            # Khác client để tránh session web đang dính SABR-only.
+            dict(
+                cookie_file=live_cookie,
+                user_agent=user_agent,
+                extractor_args="youtube:player_client=android,web_safari",
+                force_ipv4=True,
+                format_selector="bestaudio",
+                label="COOKIE LIVE + android,web_safari",
+            ),
+        ])
+
+    # Public fallback đôi khi lấy format bình thường hơn session có cookie.
+    attempts.extend([
+        dict(
+            cookie_file=None,
+            user_agent=user_agent,
+            extractor_args=None,
+            force_ipv4=True,
+            format_selector="bestaudio",
+            label="PUBLIC + default",
+        ),
+        dict(
+            cookie_file=None,
+            user_agent=user_agent,
+            extractor_args="youtube:player_client=android,web_safari",
+            force_ipv4=False,
+            format_selector="bestaudio",
+            label="PUBLIC + android,web_safari + no IPv4 force",
+        ),
+    ])
+
+    total = len(attempts)
+    for idx, params in enumerate(attempts, 1):
+        params["label"] = f"LƯỢT {idx}/{total} - {params['label']}"
+        raw = _run_ytdlp_audio_attempt(
+            video_url,
+            js_arguments,
+            **params,
+        )
+        if raw:
+            # Lưu marker để lần sau biết raw thuộc URL nào.
+            try:
+                if hasattr(cutter, "SOURCE_URL_FILE"):
+                    Path(cutter.SOURCE_URL_FILE).write_text(video_url, encoding="utf-8")
+                if hasattr(cutter, "SOURCE_TITLE_FILE"):
+                    Path(cutter.SOURCE_TITLE_FILE).write_text(original_title, encoding="utf-8")
+            except Exception:
+                pass
+
+            print("\n✅ Tải audio thành công:")
+            print(f"📁 {raw}")
+            return raw
+
+        print(f"⚠️ Lượt tải {idx}/{total} thất bại -> chuyển phương án kế tiếp.")
+
+    print("\n❌ Không tải được audio sau tất cả fallback.")
+    print("   Nếu log vẫn báo SABR-only/Only images, đây là giới hạn format của phiên YouTube hiện tại.")
+    return None
+
+
 def process_one_video(
     youtube_driver,
     chatgpt_driver,
@@ -4923,7 +5449,7 @@ def process_one_video(
             cookie_path = None
 
         stage = "download_audio_mp3"
-        raw_video = cutter.download_video(
+        raw_video = robust_download_audio(
             video_url,
             js_arguments,
             title,
