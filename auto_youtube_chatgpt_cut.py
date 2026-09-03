@@ -465,6 +465,18 @@ def chatgpt_project_url_matches(current_url, project):
     return bool(expected and current.rstrip("/").startswith(expected))
 
 
+
+def chatgpt_is_existing_conversation_url(url):
+    """
+    True nếu tab đang ở một conversation cũ.
+    Project id vẫn xuất hiện trong URL nên chatgpt_project_url_matches() có thể
+    trả True, nhưng /c/... KHÔNG phải composer chat mới.
+    """
+    value = str(url or "").lower()
+    return "/c/" in value
+
+
+
 def open_chatgpt_project_new_chat(driver, project, timeout=None):
     """
     Mở TRANG PROJECT thay vì ChatGPT Home.
@@ -480,19 +492,28 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
 
     print(f"📁 NEW CHAT trong Project: {project.get('name') or project.get('key')}")
 
-    # FAST PATH: nếu đang ở đúng Project và composer đã hiện thì không driver.get() lại.
+    # FAST + ĐÚNG:
+    # Chỉ được bỏ navigation nếu đang ở PROJECT ROOT.
+    # Nếu URL có /c/... thì đó là conversation cũ -> BẮT BUỘC quay về Project root
+    # để video mới không dồn transcript vào chat trước.
+    current_before = safe_current_url(driver)
+    in_old_conversation = chatgpt_is_existing_conversation_url(current_before)
+
     already_ready = False
     try:
         already_ready = (
-            chatgpt_project_url_matches(safe_current_url(driver), project)
+            not in_old_conversation
+            and chatgpt_project_url_matches(current_before, project)
             and find_chatgpt_composer(driver) is not None
         )
     except Exception:
         already_ready = False
 
     if already_ready:
-        print("⚡ Project đã mở sẵn + có composer -> bỏ qua reload.")
+        print("⚡ Đang ở Project ROOT + composer sạch -> dùng luôn.")
     else:
+        if in_old_conversation:
+            print("🆕 Đang ở conversation cũ (/c/...) -> quay về Project ROOT để tạo CHAT MỚI.")
         try:
             driver.get(target)
         except Exception as exc:
@@ -514,8 +535,20 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
     composer = wait_chatgpt_composer(driver, timeout=timeout)
     handle_chatgpt_conversations_api_429(driver, quiet=True)
 
-    # Nếu bị redirect ra Home/login hoặc Project khác thì không được gửi nhầm.
+    # Chốt NEW CHAT: không được phép còn ở /c/... của chat cũ.
     current = safe_current_url(driver)
+    if chatgpt_is_existing_conversation_url(current):
+        print("🔄 ChatGPT vẫn giữ conversation cũ -> ép mở lại Project root 1 lần...")
+        driver.get(target)
+        composer = wait_chatgpt_composer(driver, timeout=min(timeout, 20))
+        current = safe_current_url(driver)
+
+    if chatgpt_is_existing_conversation_url(current):
+        raise RuntimeError(
+            "Không tạo được chat mới: URL vẫn đang ở conversation cũ (/c/...)."
+        )
+
+    # Nếu bị redirect ra Home/login hoặc Project khác thì không được gửi nhầm.
     if not chatgpt_project_url_matches(current, project):
         # Có UI versions giữ project id trong DOM dù URL được rewrite. Kiểm tra link Project hiện diện.
         project_id = project.get("project_id") or ""
@@ -1611,8 +1644,12 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
             current_url = safe_current_url(old_driver)
             composer = find_chatgpt_composer(old_driver)
 
-            if composer and chatgpt_project_url_matches(current_url, project):
-                # Đã đúng Project rồi: clear draft và đi luôn, không navigate lại.
+            if (
+                composer
+                and chatgpt_project_url_matches(current_url, project)
+                and not chatgpt_is_existing_conversation_url(current_url)
+            ):
+                # Chỉ reuse trực tiếp nếu đang ở Project ROOT, tuyệt đối không reuse /c/... chat cũ.
                 residual = _loose_compare_text(get_chatgpt_composer_text(old_driver, composer))
                 if residual:
                     print(f"🧹 Same profile: xóa draft còn lại ({len(residual)} chars)...")
@@ -1622,8 +1659,11 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
                 composer = find_chatgpt_composer(old_driver)
                 residual = _loose_compare_text(get_chatgpt_composer_text(old_driver, composer)) if composer else "x"
                 if composer and not residual:
-                    print("⚡ FAST CHATGPT: giữ nguyên Chrome/profile + Project hiện tại.")
+                    print("⚡ FAST CHATGPT: giữ Chrome/profile, đang ở Project ROOT.")
                     return old_driver, old_process, project
+
+            if chatgpt_is_existing_conversation_url(current_url):
+                print("🆕 FAST CHATGPT: Chrome giữ nguyên nhưng chat cũ sẽ KHÔNG được reuse.")
 
             # Không đúng Project hoặc composer chưa có: navigation/retry nhẹ, vẫn không restart.
             ok, manual_auth, exc = auto_open_project_with_retries(
@@ -5297,7 +5337,7 @@ def ask_chatgpt(driver, prompt_path, transcript_path, chatgpt_project=None):
     for attempt_index, method in enumerate(methods, start=1):
         print("\n" + "=" * 72)
         print(f"CHATGPT SAFE - ATTEMPT {attempt_index}/{len(methods)} - {method}")
-        print("NEW CHAT -> PROMPT SAFE INLINE -> TRANSCRIPT FILE -> SEND")
+        print("NEW CHAT RIÊNG CHO VIDEO -> PROMPT SAFE INLINE -> TRANSCRIPT FILE -> SEND")
         print("=" * 72)
 
         # NEW CHAT thật BÊN TRONG PROJECT cho mỗi attempt/video.
