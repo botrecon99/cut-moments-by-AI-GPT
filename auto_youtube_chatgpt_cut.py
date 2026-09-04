@@ -13,8 +13,8 @@ Luồng:
 4) Tạo 2 file RIÊNG: *_PROMPT.txt và *_TRANSCRIPT.txt; tuyệt đối không ghép text.
 5) Mở Chrome ChatGPT thật và attach Selenium; chỉ hỏi login/xác minh khi phát hiện auth/challenge thật; PROMPT được COPY vào Windows clipboard và Ctrl+V đúng MỘT LẦN vào composer; tuyệt đối không chèn bằng JS/CDP/chunk. Sau đó code verify cấu trúc + thứ tự timestamp mẫu. TRANSCRIPT được đính kèm RIÊNG bằng uploader thật. Mỗi bước phải verify thành công mới được Send.
 6) Parse NONE hoặc các mốc HH:MM:SS --> ... / END.
-7) Sau khi có mốc hợp lệ mới tải AUDIO-ONLY và chuyển trực tiếp sang MP3 bằng story_cutter_core.py.
-8) Cắt bỏ các đoạn trên MP3 và ghép lại, chuyển vào channels/<kênh>/done/.
+7) Sau khi GPT trả mốc hợp lệ, job được đẩy sang MEDIA WORKER nền để tải AUDIO-ONLY/MP3.
+8) Main thread chuyển ngay sang video kế tiếp; media worker cắt/ghép và chỉ khi MP3 cuối OK mới ghi DONE.
 
 LƯU Ý:
 - Hai profile nằm trong ./chrome_profiles/youtube và ./chrome_profiles/chatgpt.
@@ -28,10 +28,12 @@ import os
 import re
 import shutil
 import subprocess
+import threading
 import sys
 import time
 import traceback
 from pathlib import Path
+from queue import Queue, Empty
 from urllib.parse import urlparse, parse_qs
 from urllib.request import urlopen
 
@@ -114,6 +116,17 @@ CHATGPT_RESTART_EVERY = 0
 CHATGPT_ROUND_ROBIN = True
 # Đóng HẲN Chrome ChatGPT sau mỗi video để chỉ có 1 profile ChatGPT chạy tại một thời điểm.
 CHATGPT_ROUND_ROBIN_CLOSE_EACH_VIDEO = False
+
+# ============================================================
+# PIPELINE CUỐN CHIẾU AI -> MEDIA
+# ============================================================
+# 1 worker media là cố ý: story_cutter_core dùng chung DOWNLOAD_DIR/raw_audio.
+# Một worker giúp không đụng file tạm, không tranh quá nhiều mạng/CPU với Chrome.
+MEDIA_WORKER_ENABLED = True
+MEDIA_QUEUE_MAX = 2          # AI được chạy trước tối đa ~2 video
+MEDIA_WORKER_COUNT = 1       # giữ = 1 với kiến trúc DOWNLOAD_DIR hiện tại
+MEDIA_COOKIE_DIR = BASE_DIR / "runtime" / "media_cookies"
+
 
 # ChatGPT sidebar/project list can occasionally return HTTP 429 on
 # /backend-api/conversations while the current model answer still succeeds.
@@ -984,14 +997,17 @@ def resolve_channel_workspace(metadata):
 
     return workspace
 
+PIPELINE_FILE_LOCK = threading.RLock()
+
 def append_channel_done_link(workspace, video_url):
     path = workspace["done_links"]
-    existing = set()
-    if path.exists():
-        existing = {ln.strip() for ln in path.read_text(encoding="utf-8-sig").splitlines() if ln.strip()}
-    if video_url not in existing:
-        with open(path, "a", encoding="utf-8") as f:
-            f.write(video_url + "\n")
+    with PIPELINE_FILE_LOCK:
+        existing = set()
+        if path.exists():
+            existing = {ln.strip() for ln in path.read_text(encoding="utf-8-sig").splitlines() if ln.strip()}
+        if video_url not in existing:
+            with open(path, "a", encoding="utf-8") as f:
+                f.write(video_url + "\n")
 
 
 def load_global_done_set():
@@ -1009,8 +1025,9 @@ def load_global_done_set():
 
 def append_global_done_link(video_url):
     """Append-only: không rewrite list.txt, phù hợp hàng chục nghìn link."""
-    with open(GLOBAL_DONE_FILE, "a", encoding="utf-8", newline="\n") as f:
-        f.write(video_url + "\n")
+    with PIPELINE_FILE_LOCK:
+        with open(GLOBAL_DONE_FILE, "a", encoding="utf-8", newline="\n") as f:
+            f.write(video_url + "\n")
 
 
 
@@ -1080,8 +1097,9 @@ def append_failure(video_url, stage, error, channel_id="", title=""):
         "error": str(error)[:4000],
     }
     try:
-        with open(GLOBAL_FAILED_FILE, "a", encoding="utf-8", newline="\n") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        with PIPELINE_FILE_LOCK:
+            with open(GLOBAL_FAILED_FILE, "a", encoding="utf-8", newline="\n") as f:
+                f.write(json.dumps(record, ensure_ascii=False) + "\n")
     except OSError:
         pass
 
@@ -5754,7 +5772,7 @@ def _run_ytdlp_audio_attempt(
         "--retries", "2",
         "--fragment-retries", "2",
         "--retry-sleep", "1",
-        "--concurrent-fragments", "3",
+        "--concurrent-fragments", "2",
     ]
 
     if force_ipv4:
@@ -5953,7 +5971,44 @@ def robust_download_audio(
     return None
 
 
-def process_one_video(
+def snapshot_media_cookie_session(youtube_driver, video_url, video_id):
+    """
+    Chụp cookie RIÊNG cho job media ngay khi AI vừa xong.
+
+    Main thread dùng Selenium YouTube; media worker KHÔNG chạm Selenium.
+    Queue nhỏ (MEDIA_QUEUE_MAX) giúp cookie không nằm chờ quá lâu.
+    """
+    MEDIA_COOKIE_DIR.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time() * 1000)
+    cookie_path = MEDIA_COOKIE_DIR / f"{safe_name(video_id, 'video')}_{stamp}.txt"
+
+    try:
+        session = export_fresh_youtube_cookies(
+            youtube_driver,
+            video_url=video_url,
+            cookie_file=cookie_path,
+        )
+    except Exception as exc:
+        print(f"⚠️ Không snapshot được cookie cho media: {exc}")
+        session = None
+
+    if not session:
+        try:
+            cookie_path.unlink(missing_ok=True)
+        except Exception:
+            pass
+        return {
+            "cookie_path": None,
+            "user_agent": None,
+        }
+
+    return {
+        "cookie_path": str(session["path"]),
+        "user_agent": session.get("user_agent") or "",
+    }
+
+
+def prepare_video_ai_job(
     youtube_driver,
     chatgpt_driver,
     video_url,
@@ -5962,7 +6017,19 @@ def process_one_video(
     index,
     total,
     chatgpt_project=None,
+    is_retry=False,
 ):
+    """
+    PHẦN AI/CHROME của một video.
+
+    Return:
+      {"status": "done"}       -> đã DONE ngay (existing final / full-cut)
+      {"status": "failed"}     -> fail trước media
+      {"status": "media_job"}  -> GPT xong; đưa job sang background media worker
+
+    Quan trọng: sau khi trả media_job, GPT/YouTube main thread được chuyển ngay
+    sang video kế tiếp. doneLink CHỈ được ghi bởi media worker khi MP3 cuối OK.
+    """
     video_id = video_id_from_url(video_url)
     title = "video"
     workspace = None
@@ -5975,21 +6042,19 @@ def process_one_video(
 
     try:
         # ------------------------------------------------------------
-        # STEP 1: TRANSCRIPT. get_transcript tự mở đúng video.
+        # STEP 1: TRANSCRIPT
         # ------------------------------------------------------------
         stage = "transcript"
         transcript = get_transcript(youtube_driver, video_url)
         if not transcript:
             append_failure(video_url, stage, "Không có/lấy không được transcript")
-            return False
+            return {"status": "failed", "url": video_url, "stage": stage}
 
-        # Không export cookie ngay ở đây nữa.
-        # Browser thường đã có title/channel/channel_id, nên ghi cookie 2 lần/video là phí.
         cookie_path = None
         browser_user_agent = None
 
         # ------------------------------------------------------------
-        # STEP 2: METADATA + CHANNEL FOLDER.
+        # STEP 2: METADATA + CHANNEL FOLDER
         # ------------------------------------------------------------
         stage = "metadata"
         print("\n⚡ BƯỚC METADATA: ưu tiên đọc trực tiếp từ tab YouTube; không export cookie nếu chưa cần...")
@@ -6000,7 +6065,6 @@ def process_one_video(
             cookie_file=None,
         )
 
-        # Chỉ khi metadata thật sự thiếu channel/channel_id mới export cookie sớm để retry.
         channel_id_probe = str(metadata.get("channel_id") or "")
         channel_probe = str(metadata.get("channel") or metadata.get("uploader") or "")
         if (
@@ -6036,16 +6100,16 @@ def process_one_video(
         if chatgpt_project:
             print(f"👤 ChatGPT Project: {chatgpt_project.get('name') or chatgpt_project.get('key')}")
 
-        # Nếu file cuối đã tồn tại nhưng doneLink chưa ghi (crash sau move) => tự phục hồi.
+        # Crash recovery: file final đã có nhưng doneLink thiếu.
         existing_final = find_existing_final(workspace, video_id)
         if existing_final:
             print(f"✅ Đã thấy MP3 hoàn chỉnh từ lần trước: {existing_final.name}")
             append_global_done_link(video_url)
             append_channel_done_link(workspace, video_url)
-            return True
+            return {"status": "done", "url": video_url, "final_path": str(existing_final)}
 
         # ------------------------------------------------------------
-        # STEP 3: 2 FILE AI RIÊNG.
+        # STEP 3: AI files
         # ------------------------------------------------------------
         stage = "prepare_ai_files"
         prompt_path, transcript_path = prepare_separate_ai_files(
@@ -6061,7 +6125,7 @@ def process_one_video(
         parsed = None
 
         # ------------------------------------------------------------
-        # STEP 4: REUSE AI result nếu lần trước AI xong nhưng download/cut fail.
+        # STEP 4: Reuse AI cache
         # ------------------------------------------------------------
         if REUSE_VALID_AI_RESULT and canonical_result.exists():
             try:
@@ -6076,17 +6140,22 @@ def process_one_video(
                 parsed = None
 
         # ------------------------------------------------------------
-        # STEP 5: CHATGPT + STRICT VALIDATION + REPAIR.
+        # STEP 5: CHATGPT + STRICT VALIDATION
         # ------------------------------------------------------------
         if parsed is None:
             stage = "chatgpt"
-            answer = ask_chatgpt(chatgpt_driver, prompt_path, transcript_path, chatgpt_project=chatgpt_project)
+            answer = ask_chatgpt(
+                chatgpt_driver,
+                prompt_path,
+                transcript_path,
+                chatgpt_project=chatgpt_project,
+            )
             if not answer:
                 append_failure(
                     video_url, stage, "Không nhận được câu trả lời ChatGPT",
                     workspace["channel_id"], title
                 )
-                return False
+                return {"status": "failed", "url": video_url, "stage": stage}
 
             parsed, reason = parse_ai_cut_result(answer, transcript=transcript)
 
@@ -6109,7 +6178,7 @@ def process_one_video(
                     workspace["channel_id"], title
                 )
                 print("❌ AI vẫn không hợp lệ sau repair; KHÔNG download/cắt.")
-                return False
+                return {"status": "failed", "url": video_url, "stage": "ai_validate"}
 
             canonical_result.write_text(clean_ai_answer(answer) + "\n", encoding="utf-8")
             print(f"💾 AI result chuẩn: {canonical_result}")
@@ -6120,7 +6189,7 @@ def process_one_video(
         print("-" * 50)
 
         # ------------------------------------------------------------
-        # STEP 5.5: AI yêu cầu cắt TOÀN BỘ => phân loại NO_STORY, KHÔNG download.
+        # FULL CUT = không cần media
         # ------------------------------------------------------------
         if ai_requests_full_cut(parsed):
             print("🚫 AI trả 00:00:00 --> END: toàn bộ audio bị loại theo kết quả AI.")
@@ -6129,29 +6198,108 @@ def process_one_video(
             append_global_done_link(video_url)
             append_channel_done_link(workspace, video_url)
             write_video_log(workspace, video_id, "FULL_CUT -> AI requested full cut; download skipped")
-            return True
+            return {"status": "done", "url": video_url, "full_cut": True}
 
         # ------------------------------------------------------------
-        # STEP 6: DISK + DOWNLOAD.
+        # GPT HẾT NHIỆM VỤ -> SNAPSHOT COOKIE -> MEDIA QUEUE
         # ------------------------------------------------------------
+        stage = "snapshot_media_session"
+        media_session = snapshot_media_cookie_session(
+            youtube_driver,
+            video_url,
+            video_id,
+        )
+
+        job = {
+            "video_url": video_url,
+            "video_id": video_id,
+            "title": title,
+            "workspace": workspace,
+            "parsed": parsed,
+            "js_arguments": list(js_arguments or []),
+            "cookie_path": media_session.get("cookie_path"),
+            "user_agent": media_session.get("user_agent"),
+            "is_retry": bool(is_retry),
+        }
+
+        print("\n🚀 GPT ĐÃ XONG VIDEO NÀY.")
+        print("📦 Đưa DOWNLOAD MP3 + FFmpeg sang MEDIA WORKER chạy nền.")
+        print("➡️ Main thread được chuyển ngay sang transcript/GPT của video kế tiếp.")
+
+        return {
+            "status": "media_job",
+            "url": video_url,
+            "job": job,
+        }
+
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        if workspace:
+            write_video_log(
+                workspace,
+                video_id,
+                f"ERROR stage={stage}: {exc}\n{traceback.format_exc()}",
+            )
+            channel_id = workspace.get("channel_id", "")
+        else:
+            channel_id = ""
+
+        append_failure(video_url, stage, exc, channel_id, title)
+        print(f"❌ Lỗi tại stage={stage}: {exc}")
+        return {"status": "failed", "url": video_url, "stage": stage}
+
+
+def process_media_job(job):
+    """
+    DOWNLOAD MP3 + CUT/MERGE chạy trong background worker.
+
+    KHÔNG dùng Selenium driver trong thread này.
+    Cookie là snapshot riêng của video do main thread tạo trước khi enqueue.
+    """
+    video_url = job["video_url"]
+    video_id = job["video_id"]
+    title = job["title"]
+    workspace = job["workspace"]
+    parsed = job["parsed"]
+    js_arguments = job["js_arguments"]
+    cookie_path = job.get("cookie_path")
+    user_agent = job.get("user_agent")
+    is_retry = bool(job.get("is_retry"))
+    stage = "media_start"
+    raw_video = None
+
+    print("\n" + "▓" * 72)
+    print(f"🎧 [MEDIA] BẮT ĐẦU: {video_id} | {title[:70]}")
+    print(f"🔁 [MEDIA] retry={'CÓ' if is_retry else 'KHÔNG'}")
+    print("▓" * 72)
+
+    try:
+        # Có thể final đã được tạo bởi lần chạy khác trước khi job tới worker.
+        existing_final = find_existing_final(workspace, video_id)
+        if existing_final:
+            append_global_done_link(video_url)
+            append_channel_done_link(workspace, video_url)
+            return {
+                "url": video_url,
+                "ok": True,
+                "is_retry": is_retry,
+                "final_path": str(existing_final),
+                "stage": "existing_final",
+            }
+
         stage = "disk"
         if not check_free_space(cutter.DOWNLOAD_DIR):
-            append_failure(video_url, stage, "Không đủ dung lượng trống", workspace["channel_id"], title)
-            return False
-
-        # Refresh cookie LẦN NỮA ngay sát download. Cookie lấy trước AI chỉ dùng hỗ trợ metadata.
-        stage = "refresh_cookies_before_download"
-        fresh_download_session = export_fresh_youtube_cookies(
-            youtube_driver,
-            video_url=video_url,
-            cookie_file=LIVE_COOKIE_FILE,
-        )
-        if fresh_download_session:
-            cookie_path = fresh_download_session["path"]
-            browser_user_agent = fresh_download_session.get("user_agent") or browser_user_agent
-        else:
-            print("⚠️ Không refresh được cookie ngay trước download; yt-dlp vẫn có public fallback.")
-            cookie_path = None
+            append_failure(
+                video_url, stage, "Không đủ dung lượng trống",
+                workspace["channel_id"], title
+            )
+            return {
+                "url": video_url,
+                "ok": False,
+                "is_retry": is_retry,
+                "stage": stage,
+            }
 
         stage = "download_audio_mp3"
         raw_video = robust_download_audio(
@@ -6159,18 +6307,23 @@ def process_one_video(
             js_arguments,
             title,
             cookie_file=cookie_path,
-            user_agent=browser_user_agent,
+            user_agent=user_agent,
         )
         if not raw_video:
             append_failure(
-                video_url, stage, "yt-dlp không tải được video sau tất cả fallback",
-                workspace["channel_id"], title
+                video_url,
+                stage,
+                "yt-dlp không tải được audio sau tất cả fallback",
+                workspace["channel_id"],
+                title,
             )
-            return False
+            return {
+                "url": video_url,
+                "ok": False,
+                "is_retry": is_retry,
+                "stage": stage,
+            }
 
-        # ------------------------------------------------------------
-        # STEP 7: CUT/MERGE.
-        # ------------------------------------------------------------
         stage = "cut_merge"
         final_path = cutter.process_video(
             raw_video,
@@ -6181,44 +6334,229 @@ def process_one_video(
             video_id=video_id,
         )
         if not final_path:
-            append_failure(video_url, stage, "FFmpeg cắt/ghép thất bại", workspace["channel_id"], title)
-            return False
+            append_failure(
+                video_url,
+                stage,
+                "FFmpeg cắt/ghép thất bại",
+                workspace["channel_id"],
+                title,
+            )
+            return {
+                "url": video_url,
+                "ok": False,
+                "is_retry": is_retry,
+                "stage": stage,
+            }
 
-        # Sanity: final phải đọc được duration và > 0.
+        stage = "verify_final_mp3"
         final_duration = cutter.get_video_duration(final_path)
         if final_duration is None or final_duration <= 0:
-            append_failure(video_url, "verify_final_mp3", "MP3 cuối không đọc được duration", workspace["channel_id"], title)
-            return False
+            append_failure(
+                video_url,
+                stage,
+                "MP3 cuối không đọc được duration",
+                workspace["channel_id"],
+                title,
+            )
+            return {
+                "url": video_url,
+                "ok": False,
+                "is_retry": is_retry,
+                "stage": stage,
+            }
 
-        # ------------------------------------------------------------
-        # STEP 8: MARK DONE APPEND-ONLY.
-        # ------------------------------------------------------------
         stage = "mark_done"
         append_global_done_link(video_url)
         append_channel_done_link(workspace, video_url)
         write_video_log(workspace, video_id, f"DONE -> {final_path}")
 
         cutter.cleanup_after_success(raw_video)
-        print(f"✅ HOÀN TẤT MP3: {final_path}")
-        return True
+        raw_video = None
 
-    except KeyboardInterrupt:
-        raise
+        print(f"✅ [MEDIA] HOÀN TẤT MP3: {final_path}")
+        return {
+            "url": video_url,
+            "ok": True,
+            "is_retry": is_retry,
+            "final_path": str(final_path),
+            "stage": stage,
+        }
+
     except Exception as exc:
-        if workspace:
-            write_video_log(workspace, video_id, f"ERROR stage={stage}: {exc}\n{traceback.format_exc()}")
-            channel_id = workspace.get("channel_id", "")
-        else:
-            channel_id = ""
-        append_failure(video_url, stage, exc, channel_id, title)
-        print(f"❌ Lỗi tại stage={stage}: {exc}")
-        return False
+        write_video_log(
+            workspace,
+            video_id,
+            f"MEDIA ERROR stage={stage}: {exc}\n{traceback.format_exc()}",
+        )
+        append_failure(
+            video_url,
+            stage,
+            exc,
+            workspace.get("channel_id", ""),
+            title,
+        )
+        print(f"❌ [MEDIA] Lỗi stage={stage}: {exc}")
+        return {
+            "url": video_url,
+            "ok": False,
+            "is_retry": is_retry,
+            "stage": stage,
+            "error": str(exc),
+        }
+
     finally:
-        if DELETE_LIVE_COOKIE_AFTER_DOWNLOAD:
+        # Cookie snapshot là file riêng của job, xóa khi worker xong.
+        if cookie_path:
             try:
-                LIVE_COOKIE_FILE.unlink(missing_ok=True)
+                Path(cookie_path).unlink(missing_ok=True)
             except Exception:
                 pass
+
+
+class AsyncMediaPipeline:
+    """
+    Một consumer media chạy nền.
+
+    queue max nhỏ để:
+    - AI không chạy quá xa download;
+    - cookie snapshot không nằm chờ hàng giờ;
+    - RAM/disk không phình;
+    - vẫn overlap GPT(video N+1) với download/cut(video N).
+    """
+
+    SENTINEL = object()
+
+    def __init__(self, max_queue=MEDIA_QUEUE_MAX):
+        self.jobs = Queue(maxsize=max(1, int(max_queue)))
+        self.results = Queue()
+        self.thread = threading.Thread(
+            target=self._worker_loop,
+            name="MEDIA-WORKER-1",
+            daemon=True,
+        )
+        self.started = False
+        self._stopping = False
+
+    def start(self):
+        if self.started:
+            return
+        self.started = True
+        self.thread.start()
+        print(
+            f"🚄 MEDIA PIPELINE: 1 worker nền | queue tối đa {self.jobs.maxsize} job."
+        )
+
+    def _worker_loop(self):
+        while True:
+            job = self.jobs.get()
+            try:
+                if job is self.SENTINEL:
+                    return
+                result = process_media_job(job)
+                self.results.put(result)
+            except Exception as exc:
+                # Không để worker chết làm queue.join() treo vô hạn.
+                try:
+                    video_url = str(job.get("video_url") or "")
+                    result = {
+                        "url": video_url,
+                        "ok": False,
+                        "is_retry": bool(job.get("is_retry")),
+                        "stage": "media_worker_crash",
+                        "error": str(exc),
+                    }
+                    self.results.put(result)
+                    if video_url:
+                        append_failure(video_url, "media_worker_crash", exc)
+                except Exception:
+                    pass
+            finally:
+                self.jobs.task_done()
+
+    def submit(self, job):
+        if not self.started:
+            self.start()
+
+        if self.jobs.full():
+            print(
+                "⏳ MEDIA QUEUE đã đầy -> AI chờ media nhường 1 slot. "
+                "Vẫn giữ tối đa 2 video chạy trước để không nghẽn mạng/RAM."
+            )
+
+        # Blocking ở đây là backpressure CÓ CHỦ Ý.
+        self.jobs.put(job)
+        print(
+            f"📥 MEDIA QUEUE: +1 | đang chờ={self.jobs.qsize()} | "
+            f"{job.get('video_id')}"
+        )
+
+    def drain_results(self):
+        items = []
+        while True:
+            try:
+                items.append(self.results.get_nowait())
+            except Empty:
+                break
+        return items
+
+    def wait_all(self):
+        if self.started:
+            self.jobs.join()
+        return self.drain_results()
+
+    def shutdown(self, wait=True):
+        if not self.started or self._stopping:
+            return
+        self._stopping = True
+
+        if wait:
+            self.jobs.join()
+
+        try:
+            self.jobs.put_nowait(self.SENTINEL)
+        except Exception:
+            try:
+                self.jobs.put(self.SENTINEL, timeout=1)
+            except Exception:
+                return
+
+        if wait:
+            self.thread.join(timeout=10)
+
+
+def process_one_video(
+    youtube_driver,
+    chatgpt_driver,
+    video_url,
+    prompt_template,
+    js_arguments,
+    index,
+    total,
+    chatgpt_project=None,
+):
+    """
+    Wrapper tuần tự giữ tương thích nếu có code ngoài gọi hàm cũ.
+    Main pipeline mới KHÔNG dùng wrapper này; main dùng producer + media worker.
+    """
+    outcome = prepare_video_ai_job(
+        youtube_driver,
+        chatgpt_driver,
+        video_url,
+        prompt_template,
+        js_arguments,
+        index,
+        total,
+        chatgpt_project=chatgpt_project,
+        is_retry=False,
+    )
+    if outcome.get("status") == "done":
+        return True
+    if outcome.get("status") != "media_job":
+        return False
+
+    result = process_media_job(outcome["job"])
+    return bool(result.get("ok"))
+
 
 def main():
     configure_console()
@@ -6266,6 +6604,7 @@ def main():
     chatgpt_driver = None
     chatgpt_process = None
     current_project = None
+    media_pipeline = None
 
     try:
         # YouTube giữ nguyên một Selenium profile cho cả batch.
@@ -6274,13 +6613,17 @@ def main():
             return
 
         # ============================================================
-        # SCHEDULER 2 PHASE:
-        #   PHASE 1 = chỉ link MỚI/chưa từng fail
-        #   PHASE 2 = retry link fail SAU KHI phase 1 chạy hết
+        # SCHEDULER 2 PHASE + ASYNC MEDIA
         #
-        # Một link fail ở phase 1 chỉ được enqueue, KHÔNG retry ngay.
-        # Ở phase 2 mỗi link chỉ retry 1 lần trong run hiện tại.
-        # Nếu vẫn fail -> để lần chạy sau, không loop vô hạn.
+        # MAIN THREAD:
+        #   transcript -> GPT -> enqueue media -> VIDEO KẾ
+        #
+        # MEDIA THREAD:
+        #   download MP3 -> FFmpeg -> DONE
+        #
+        # Fail vẫn giữ rule:
+        #   link mới fail -> KHÔNG retry ngay
+        #   chạy hết phase link mới -> mới retry.
         # ============================================================
         done_now = load_global_done_set()
         historical_failed = load_unresolved_failed_set(done_now)
@@ -6290,27 +6633,77 @@ def main():
         retry_seen = set(retry_queue)
 
         print("\n" + "=" * 72)
-        print("📋 LỊCH XỬ LÝ LINK - ƯU TIÊN LINK MỚI")
+        print("🚄 PIPELINE CUỐN CHIẾU: AI + MEDIA CHẠY SONG SONG")
         print("=" * 72)
         print(f"🆕 Link mới/chưa từng fail: {len(fresh_urls):,}")
         print(f"⏳ Link fail cũ hoãn về cuối: {len(retry_queue):,}")
-        print("✅ Link fail trong lúc chạy sẽ KHÔNG retry ngay.")
-        print("🔁 Chỉ sau khi chạy hết link mới mới bắt đầu RETRY.")
+        print(f"🎧 Media worker: 1 | queue tối đa: {MEDIA_QUEUE_MAX}")
+        print("🧠 GPT xong video N -> lập tức chuyển video N+1.")
+        print("🎵 Download/cắt video N chạy nền.")
+        print("✅ doneLink chỉ ghi khi MP3 cuối đã OK.")
         print("=" * 72)
 
         success_urls = set()
         unresolved_urls = set()
+        pending_media_urls = set()
         fresh_failed_this_run = 0
         retry_attempts = 0
 
-        def run_one_scheduled(video_url, display_index, display_total, phase_name):
+        media_pipeline = AsyncMediaPipeline(MEDIA_QUEUE_MAX)
+        media_pipeline.start()
+
+        def handle_media_results(results):
+            nonlocal fresh_failed_this_run
+
+            for result in results:
+                video_url = result.get("url")
+                if not video_url:
+                    continue
+
+                pending_media_urls.discard(video_url)
+
+                if result.get("ok"):
+                    success_urls.add(video_url)
+                    unresolved_urls.discard(video_url)
+                    print(
+                        f"✅ [MEDIA RESULT] DONE: {video_id_from_url(video_url)}"
+                    )
+                    continue
+
+                unresolved_urls.add(video_url)
+                is_retry = bool(result.get("is_retry"))
+                stage = result.get("stage") or "media"
+
+                if not is_retry:
+                    if video_url not in retry_seen:
+                        retry_seen.add(video_url)
+                        retry_queue.append(video_url)
+                    print(
+                        f"⏭️ [MEDIA RESULT] FAIL stage={stage} -> "
+                        "hoãn RETRY về cuối batch."
+                    )
+                else:
+                    print(
+                        f"❌ [MEDIA RESULT] RETRY vẫn fail stage={stage} -> "
+                        "để lần chạy sau."
+                    )
+
+        def drain_media_now():
+            handle_media_results(media_pipeline.drain_results())
+
+        def run_one_ai_scheduled(
+            video_url,
+            display_index,
+            display_total,
+            phase_name,
+            is_retry=False,
+        ):
             nonlocal youtube_driver
             nonlocal chatgpt_driver
             nonlocal chatgpt_process
             nonlocal current_project
             nonlocal rotation_cursor
 
-            # Chọn profile theo round-robin và nhớ cursor xuyên qua restart chương trình.
             target_index = rotation_cursor % len(rotation_targets)
             target = rotation_targets[target_index]
             account = target["account"]
@@ -6325,9 +6718,9 @@ def main():
             print(f"📂 Project: {project['name']}")
             print("=" * 72)
 
-            ok = False
+            outcome = {"status": "failed", "url": video_url}
+
             try:
-                # Browser YouTube có thể crash sau nhiều giờ/ngày.
                 if not driver_alive(youtube_driver):
                     print("♻️ YouTube driver đã mất kết nối, đang mở lại...")
                     try:
@@ -6347,7 +6740,7 @@ def main():
 
                 ensure_chatgpt_ready_interactive(chatgpt_driver)
 
-                ok = process_one_video(
+                outcome = prepare_video_ai_job(
                     youtube_driver,
                     chatgpt_driver,
                     video_url,
@@ -6356,17 +6749,25 @@ def main():
                     display_index,
                     display_total,
                     chatgpt_project=current_project,
+                    is_retry=is_retry,
                 )
+
+                if outcome.get("status") == "media_job":
+                    pending_media_urls.add(video_url)
+                    media_pipeline.submit(outcome["job"])
 
             except KeyboardInterrupt:
                 raise
             except Exception as exc:
-                ok = False
+                outcome = {
+                    "status": "failed",
+                    "url": video_url,
+                    "stage": "outer_scheduler",
+                }
+                append_failure(video_url, "outer_scheduler", exc)
                 print(f"\n❌ Lỗi ngoài dự kiến với profile/video này: {exc}")
 
             finally:
-                # Mỗi ATTEMPT dùng xong một profile thì cursor đi tiếp,
-                # bất kể success/fail.
                 rotation_cursor = (target_index + 1) % len(rotation_targets)
                 save_chatgpt_round_robin_cursor(rotation_cursor)
 
@@ -6376,81 +6777,112 @@ def main():
                     chatgpt_process = None
                     current_project = None
 
-            return ok
+            # Media của video trước có thể vừa xong trong lúc GPT video này chạy.
+            drain_media_now()
+            return outcome
 
         # ------------------------------------------------------------
-        # PHASE 1: CHỈ LINK MỚI.
+        # PHASE 1: toàn bộ LINK MỚI.
         # ------------------------------------------------------------
         if fresh_urls:
             print("\n" + "#" * 72)
-            print("🆕 PHASE 1/2 - CHẠY TOÀN BỘ LINK MỚI TRƯỚC")
+            print("🆕 PHASE 1/2 - AI chạy link mới; MEDIA chạy cuốn chiếu phía sau")
             print("#" * 72)
 
         for index, video_url in enumerate(fresh_urls, start=1):
-            ok = run_one_scheduled(
+            outcome = run_one_ai_scheduled(
                 video_url,
                 index,
                 len(fresh_urls),
                 "LINK MỚI",
+                is_retry=False,
             )
 
-            if ok:
+            status = outcome.get("status")
+            if status == "done":
                 success_urls.add(video_url)
                 unresolved_urls.discard(video_url)
-            else:
+
+            elif status == "failed":
                 fresh_failed_this_run += 1
                 unresolved_urls.add(video_url)
 
-                # Hoãn về cuối; không retry ngay.
                 if video_url not in retry_seen:
                     retry_seen.add(video_url)
                     retry_queue.append(video_url)
 
                 print(
-                    "⏭️ Link FAIL -> ĐÃ HOÃN RETRY VỀ CUỐI. "
+                    "⏭️ AI/TRANSCRIPT FAIL -> hoãn RETRY về cuối. "
                     "Tiếp tục link mới kế tiếp."
                 )
 
+            # media_job: KHÔNG đánh dấu done/fail lúc này.
+            # Worker sẽ trả result sau.
+            drain_media_now()
+
+        # Hết link mới về phía AI chưa có nghĩa media đã xong.
+        # Drain hết media fresh trước khi bắt đầu retry để giữ đúng rule của user.
+        if pending_media_urls:
+            print("\n⏳ AI đã chạy hết LINK MỚI.")
+            print(
+                f"🎧 Chờ MEDIA xử lý nốt {len(pending_media_urls)} job đang pending "
+                "trước khi sang RETRY..."
+            )
+        handle_media_results(media_pipeline.wait_all())
+
         # ------------------------------------------------------------
-        # PHASE 2: RETRY FAIL SAU KHI HẾT LINK MỚI.
-        # historical failed + fresh failures, mỗi URL đúng 1 lượt.
+        # PHASE 2: retry các fail cũ + fail fresh.
         # ------------------------------------------------------------
         if retry_queue:
             print("\n" + "#" * 72)
-            print("🔁 PHASE 2/2 - ĐÃ HẾT LINK MỚI, BẮT ĐẦU RETRY LINK FAIL")
+            print("🔁 PHASE 2/2 - LINK MỚI ĐÃ XONG, BẮT ĐẦU RETRY FAIL")
             print(f"📦 Tổng link cần retry: {len(retry_queue):,}")
-            print("⚠️ Mỗi link chỉ retry 1 lần trong run này; fail nữa để lần chạy sau.")
+            print("⚠️ Mỗi link chỉ retry 1 lần trong run hiện tại.")
             print("#" * 72)
 
         for retry_index, video_url in enumerate(retry_queue, start=1):
-            # Có thể link đã thành công ở phase 1 qua recovery bên trong process,
-            # hoặc được mark DONE từ tác vụ khác; bỏ qua nếu giờ đã done.
             if video_url in load_global_done_set():
                 print(
-                    f"⏭️ RETRY {retry_index}/{len(retry_queue)} đã DONE trước lượt retry -> bỏ qua."
+                    f"⏭️ RETRY {retry_index}/{len(retry_queue)} đã DONE -> bỏ qua."
                 )
                 success_urls.add(video_url)
                 unresolved_urls.discard(video_url)
                 continue
 
             retry_attempts += 1
-            ok = run_one_scheduled(
+
+            outcome = run_one_ai_scheduled(
                 video_url,
                 retry_index,
                 len(retry_queue),
                 "RETRY",
+                is_retry=True,
             )
 
-            if ok:
+            status = outcome.get("status")
+
+            if status == "done":
                 success_urls.add(video_url)
                 unresolved_urls.discard(video_url)
-                print("✅ RETRY thành công.")
-            else:
+
+            elif status == "failed":
                 unresolved_urls.add(video_url)
                 print(
-                    "❌ RETRY vẫn fail -> KHÔNG chạy lại lần nữa trong run này. "
-                    "Để dành cho lần chạy sau."
+                    "❌ RETRY AI/TRANSCRIPT vẫn fail -> không chạy lại trong run này."
                 )
+
+            # media_job sẽ được worker xử lý song song với retry kế tiếp.
+            drain_media_now()
+
+        # Drain media của phase retry.
+        if pending_media_urls:
+            print(
+                f"\n⏳ Đã enqueue hết RETRY. Chờ MEDIA nốt "
+                f"{len(pending_media_urls)} job..."
+            )
+        handle_media_results(media_pipeline.wait_all())
+
+        media_pipeline.shutdown(wait=True)
 
         success = len(success_urls)
         failed = len(unresolved_urls)
@@ -6459,8 +6891,9 @@ def main():
         print("KẾT QUẢ")
         print(f"✅ Thành công: {success}")
         print(f"❌ Thất bại còn lại: {failed}")
-        print(f"⏳ Fail phát sinh ở phase link mới: {fresh_failed_this_run}")
+        print(f"⏳ Fail AI/TRANSCRIPT phát sinh ở phase link mới: {fresh_failed_this_run}")
         print(f"🔁 Số lượt retry cuối batch: {retry_attempts}")
+        print("🚄 Chế độ: GPT(video N+1) chạy song song DOWNLOAD/CUT(video N)")
         print(f"🔄 Profile kế tiếp khi chạy lại: {rotation_targets[rotation_cursor]['account']['name']}")
         print(f"📁 Video: {CHANNELS_DIR} / <CHANNEL NAME _ CHANNEL ID> / done")
         print(f"📝 Transcript: {CHANNELS_DIR} / <CHANNEL NAME _ CHANNEL ID> / transcripts")
@@ -6480,6 +6913,13 @@ def main():
         print("\n⛔ Đã dừng bằng Ctrl+C.")
 
     finally:
+        if media_pipeline is not None:
+            try:
+                # Normal path đã drain xong. Nếu Ctrl+C thì không chờ lâu.
+                media_pipeline.shutdown(wait=False)
+            except Exception:
+                pass
+
         if youtube_driver is not None:
             try:
                 youtube_driver.quit()
