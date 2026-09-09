@@ -1,0 +1,36 @@
+ĐỂ CHỐT BẢN DEEPSEEK PRODUCTION, HÃY GỬI:
+
+BẮT BUỘC:
+1) story_cutter_core.py mà project hiện tại đang dùng.
+2) prompt.txt hiện tại.
+3) deepseek_ui_probe.json:
+   - chạy PROBE_DEEPSEEK_UI.py
+   - login DeepSeek thủ công
+   - nhấn ENTER khi thấy ô chat
+   - gửi file JSON nó tạo ra.
+
+RẤT NÊN GỬI:
+4) Ảnh chụp DeepSeek SAU KHI upload thử một file transcript .txt:
+   cần thấy card file + ô nhập + nút Send.
+5) Chuột phải Inspect rồi Copy outerHTML của:
+   - nút Upload/paperclip
+   - card file đã upload
+   - nút Send
+   - một câu trả lời DeepSeek hoàn chỉnh + nút Copy (nếu có)
+   - nút New Chat (nếu DeepSeek Home không tự reset ổn)
+
+CONFIG CẦN TRẢ LỜI:
+6) Có bao nhiêu account/profile DeepSeek?
+   Ví dụ: deepseek1, deepseek2, deepseek3.
+7) Muốn giữ mode nào:
+   - Instant mặc định
+   - Expert
+   - DeepThink bật/tắt
+   - Search bật/tắt
+   Nếu không nói, code KHÔNG tự đổi mode; giữ trạng thái UI hiện tại.
+
+KHÔNG CẦN GỬI:
+- email/password
+- cookie
+- token
+- authorization header

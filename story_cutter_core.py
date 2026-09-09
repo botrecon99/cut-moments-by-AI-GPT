@@ -11,14 +11,38 @@ from pathlib import Path
 # CẤU HÌNH
 # ============================================================
 
-BASE_DIR = Path(__file__).resolve().parent
+APP_DIR = Path(__file__).resolve().parent
+WORKSPACE_BRIDGE_FILE = APP_DIR / "workspace_bridge.json"
 
-DOWNLOAD_DIR = BASE_DIR / "downloads"
+def _load_data_dir():
+    data_dir = APP_DIR
+    if WORKSPACE_BRIDGE_FILE.exists():
+        try:
+            import json
+            cfg = json.loads(
+                WORKSPACE_BRIDGE_FILE.read_text(encoding="utf-8-sig")
+            )
+            raw = str(cfg.get("data_root") or "").strip()
+            if raw:
+                p = Path(raw).expanduser()
+                if not p.is_absolute():
+                    p = (APP_DIR / p).resolve()
+                if p.exists() and p.is_dir():
+                    data_dir = p.resolve()
+        except Exception:
+            pass
+    return data_dir
+
+# BASE_DIR = DATA workspace để raw_audio dở của project cũ có thể reuse.
+DATA_DIR = _load_data_dir()
+BASE_DIR = DATA_DIR
+
+DOWNLOAD_DIR = DATA_DIR / "downloads"
 WORK_DIR = DOWNLOAD_DIR / "_cut_work"
-DONE_DIR = BASE_DIR / "done"
+DONE_DIR = DATA_DIR / "done"
 
-LIST_FILE = BASE_DIR / "list.txt"
-DONE_LINK_FILE = BASE_DIR / "doneLink.txt"
+LIST_FILE = DATA_DIR / "list.txt"
+DONE_LINK_FILE = DATA_DIR / "doneLink.txt"
 
 TEMP_VIDEO_NAME = "raw_audio"
 SOURCE_URL_FILE = DOWNLOAD_DIR / "raw_audio_source.txt"
@@ -85,10 +109,15 @@ def configure_console():
 # ============================================================
 
 def find_program(program_name):
-    local_program = BASE_DIR / program_name
+    # Ưu tiên tool đặt cùng project DeepSeek mới.
+    app_program = APP_DIR / program_name
+    if app_program.exists():
+        return str(app_program)
 
-    if local_program.exists():
-        return str(local_program)
+    # Fallback tool cũ nếu workspace bridge đang trỏ về project trước.
+    data_program = DATA_DIR / program_name
+    if data_program.exists():
+        return str(data_program)
 
     return shutil.which(program_name)
 

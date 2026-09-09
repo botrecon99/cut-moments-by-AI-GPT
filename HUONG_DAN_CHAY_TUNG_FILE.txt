@@ -1,0 +1,724 @@
+﻿======================================================================
+HƯỚNG DẪN CHẠY TỪNG FILE - DEEPSEEK YOUTUBE PIPELINE FAST REPAIR
+======================================================================
+
+MỤC TIÊU:
+- Nối tiếp dữ liệu project ChatGPT cũ.
+- Dùng nhiều profile DeepSeek.
+- Mỗi video tạo chat mới.
+- Bật DeepThink trước khi phân tích.
+- Upload transcript TXT.
+- Lọc block kết quả cuối trước DONE.
+- Tự sửa timestamp lệch nhỏ bằng Python, không bắt DeepSeek phân tích lại.
+- Download MP3 + cắt/ghép bằng media worker.
+- Chỉ ghi DONE khi file MP3 cuối hợp lệ.
+
+======================================================================
+A. THỨ TỰ CHẠY LẦN ĐẦU TIÊN
+======================================================================
+
+BƯỚC 0 - GIẢI NÉN PROJECT
+-------------------------
+Giải nén toàn bộ project vào 1 thư mục riêng.
+
+Ví dụ:
+E:\DEEPSEEK_YOUTUBE_PIPELINE_FAST_REPAIR\
+
+
+BƯỚC 1 - CÀI THƯ VIỆN PYTHON
+-----------------------------
+Mở CMD trong thư mục project rồi chạy:
+
+    pip install -r requirements.txt
+
+Nếu máy đã cài đủ thư viện thì không cần chạy lại.
+
+Ngoài ra máy cần có:
+- Google Chrome
+- ffmpeg
+- ffprobe
+- yt-dlp
+- Node.js hoặc Deno
+
+Pipeline hiện tại ưu tiên:
+    python -m yt_dlp
+
+
+BƯỚC 2 - NỐI DATA PROJECT CŨ
+----------------------------
+CHỈ CẦN LÀM 1 LẦN.
+
+Chạy:
+
+    CONNECT_OLD_WORKSPACE.bat
+
+Sau đó dán đường dẫn THƯ MỤC project ChatGPT cũ.
+
+Ví dụ:
+
+    E:\audio chúa\story_pipeline_bundle\God Miracles Today 1111\cut-moments-by-AI-GPT
+
+Nhấn ENTER.
+
+Nếu thành công nó sẽ tạo:
+
+    workspace_bridge.json
+
+Từ lúc này project DeepSeek mới sẽ dùng trực tiếp DATA cũ:
+- list.txt
+- doneLink.txt
+- failedLink.jsonl
+- channels\
+- transcripts
+- ai_results
+- MP3 đã làm
+- raw_audio đang dở
+- YouTube Chrome profile
+
+KHÔNG cần copy đống data cũ sang folder DeepSeek mới.
+
+QUAN TRỌNG:
+Không chạy pipeline ChatGPT cũ và pipeline DeepSeek mới cùng lúc,
+vì chúng dùng chung dữ liệu.
+
+
+BƯỚC 3 - LOGIN DEEPSEEK PROFILE 1
+---------------------------------
+Chạy:
+
+    LOGIN_DEEPSEEK_PROFILE.bat
+
+Khi console hỏi chọn profile:
+
+    1
+
+Nhấn ENTER.
+
+Chrome DeepSeek sẽ mở đúng profile:
+
+    chrome_profiles\deepseek_accounts\deepseek1\Default
+
+Đăng nhập bằng tay.
+
+Chờ đến khi:
+- URL không còn /sign_in
+- đã nhìn thấy ô "Message DeepSeek"
+
+Sau đó ĐÓNG cửa sổ Chrome DeepSeek đó.
+
+
+BƯỚC 4 - LOGIN DEEPSEEK PROFILE 2
+---------------------------------
+Chạy lại:
+
+    LOGIN_DEEPSEEK_PROFILE.bat
+
+Chọn:
+
+    2
+
+Login deepseek2.
+
+Chờ thấy ô "Message DeepSeek".
+
+Sau đó ĐÓNG Chrome.
+
+Nếu sau này có thêm deepseek3, deepseek4...
+thì thêm account vào deepseek_accounts.json rồi login tương tự.
+
+
+BƯỚC 5 - KIỂM TRA PATH PROFILE (TÙY CHỌN)
+-----------------------------------------
+Có thể chạy:
+
+    python CHECK_DEEPSEEK_PROFILE_PATHS.py
+
+Nó chỉ in đường dẫn profile DeepSeek mà main code sẽ dùng.
+
+Ví dụ:
+
+    deepseek1:
+      ...\chrome_profiles\deepseek_accounts\deepseek1\Default
+
+    deepseek2:
+      ...\chrome_profiles\deepseek_accounts\deepseek2\Default
+
+Nếu path đúng thì không cần làm gì thêm.
+
+
+BƯỚC 6 - CHẠY PIPELINE THẬT
+---------------------------
+Chạy:
+
+    python auto_youtube_deepseek_cut.py
+
+Hoặc double-click file .py nếu Windows của mày đã gán Python đúng.
+
+Khi hỏi:
+
+    Dán 1 link YouTube rồi ENTER,
+    hoặc chỉ ENTER để dùng list.txt:
+
+Nếu muốn chạy toàn bộ list cũ:
+    CHỈ NHẤN ENTER.
+
+Nếu muốn chạy đúng 1 link:
+    Dán link YouTube rồi ENTER.
+
+
+======================================================================
+B. MỖI NGÀY CHỈ CẦN CHẠY GÌ?
+======================================================================
+
+Nếu đã:
+- CONNECT workspace xong
+- deepseek1 đã login
+- deepseek2 đã login
+
+thì bình thường chỉ cần:
+
+    python auto_youtube_deepseek_cut.py
+
+Sau đó:
+
+    ENTER
+
+để lấy list.txt cũ và chạy tiếp.
+
+Không cần chạy CONNECT_OLD_WORKSPACE.bat mỗi ngày.
+Không cần login lại DeepSeek nếu session vẫn còn.
+
+
+======================================================================
+C. Ý NGHĨA TỪNG FILE - FILE NÀO CHẠY / FILE NÀO KHÔNG CHẠY
+======================================================================
+
+----------------------------------------------------------------------
+1) auto_youtube_deepseek_cut.py
+----------------------------------------------------------------------
+CÓ CHẠY.
+
+Đây là FILE CHÍNH.
+
+Chức năng:
+- đọc list.txt / doneLink / failedLink
+- lấy transcript YouTube
+- round-robin DeepSeek profile
+- New Chat cho từng video
+- bật DeepThink
+- dán prompt
+- upload transcript
+- lấy câu trả lời
+- lọc FINAL RESULT cuối trước DONE
+- strict validate timestamp
+- FAST REPAIR timestamp lệch nhỏ
+- đưa job sang media worker
+- retry link fail ở cuối batch
+
+Lệnh:
+
+    python auto_youtube_deepseek_cut.py
+
+
+----------------------------------------------------------------------
+2) story_cutter_core.py
+----------------------------------------------------------------------
+KHÔNG CHẠY TRỰC TIẾP.
+
+File này được main import.
+
+Chức năng:
+- download audio
+- ffprobe duration
+- tính đoạn cần giữ
+- ffmpeg cut/merge MP3
+- reuse raw_audio nếu đúng URL
+- xuất MP3 cuối
+
+Không double-click file này.
+
+
+----------------------------------------------------------------------
+3) prompt.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Đây là prompt chính gửi cho DeepSeek.
+
+Muốn thay quy tắc phân tích:
+    sửa file prompt.txt
+
+Không đổi tên file.
+
+
+----------------------------------------------------------------------
+4) deepseek_accounts.json
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Đây là danh sách DeepSeek account/profile dùng round-robin.
+
+Ví dụ mặc định:
+
+    deepseek1
+    deepseek2
+
+Main code tự dùng path:
+
+    chrome_profiles\deepseek_accounts\<account>\Default
+
+
+----------------------------------------------------------------------
+5) deepseek_accounts.example.json
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Chỉ là file mẫu config.
+
+Nếu deepseek_accounts.json đang tồn tại và chạy tốt thì bỏ qua file này.
+
+
+----------------------------------------------------------------------
+6) CONNECT_OLD_WORKSPACE.bat
+----------------------------------------------------------------------
+CÓ CHẠY - NHƯNG CHỈ CẦN 1 LẦN.
+
+Dùng để nối project DeepSeek mới với DATA project ChatGPT cũ.
+
+Nó gọi:
+
+    CONNECT_OLD_WORKSPACE.py
+
+
+----------------------------------------------------------------------
+7) CONNECT_OLD_WORKSPACE.py
+----------------------------------------------------------------------
+KHÔNG CẦN CHẠY TRỰC TIẾP nếu đã dùng file .bat.
+
+File Python đứng sau CONNECT_OLD_WORKSPACE.bat.
+
+Có thể chạy bằng tay:
+
+    python CONNECT_OLD_WORKSPACE.py
+
+nhưng khuyên dùng .bat cho dễ.
+
+
+----------------------------------------------------------------------
+8) workspace_bridge.json
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+File này được tạo sau khi CONNECT workspace thành công.
+
+Nó ghi đường dẫn data project cũ.
+
+Ví dụ:
+
+    {
+      "mode": "reuse_in_place",
+      "data_root": "E:\\...\\cut-moments-by-AI-GPT",
+      "reuse_youtube_profile": true
+    }
+
+Không xóa nếu vẫn muốn dùng data project cũ.
+
+
+----------------------------------------------------------------------
+9) workspace_bridge.example.json
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Chỉ là file mẫu.
+
+
+----------------------------------------------------------------------
+10) DISCONNECT_OLD_WORKSPACE.bat
+----------------------------------------------------------------------
+CHỈ CHẠY KHI MUỐN NGẮT DATA CŨ.
+
+Nó xóa workspace_bridge.json.
+
+Sau khi disconnect:
+project DeepSeek sẽ dùng data trong chính folder mới,
+không còn nối data cũ.
+
+Bình thường KHÔNG chạy file này.
+
+
+----------------------------------------------------------------------
+11) LOGIN_DEEPSEEK_PROFILE.bat
+----------------------------------------------------------------------
+CÓ CHẠY KHI CẦN LOGIN PROFILE.
+
+Dùng:
+- lần đầu
+- khi DeepSeek logout
+- khi session hết hạn
+
+Nó gọi:
+
+    LOGIN_DEEPSEEK_ACCOUNTS.py
+
+
+----------------------------------------------------------------------
+12) LOGIN_DEEPSEEK_ACCOUNTS.py
+----------------------------------------------------------------------
+KHÔNG CẦN CHẠY TRỰC TIẾP nếu dùng .bat.
+
+Chức năng:
+- đọc deepseek_accounts.json
+- mở đúng Chrome user-data-dir
+- đảm bảo login helper và main dùng cùng một profile
+
+
+----------------------------------------------------------------------
+13) CHECK_DEEPSEEK_PROFILE_PATHS.py
+----------------------------------------------------------------------
+CÓ THỂ CHẠY - TÙY CHỌN.
+
+Dùng khi nghi ngờ:
+"t login rồi mà main lại bắt login lại".
+
+Lệnh:
+
+    python CHECK_DEEPSEEK_PROFILE_PATHS.py
+
+Nó chỉ kiểm tra/in path, không thay đổi account.
+
+
+----------------------------------------------------------------------
+14) PROBE_DEEPSEEK_UI.py
+----------------------------------------------------------------------
+BÌNH THƯỜNG KHÔNG CẦN CHẠY NỮA.
+
+Dùng khi DeepSeek đổi UI và code không tìm được:
+- Message DeepSeek
+- DeepThink
+- paperclip
+- Send
+- Copy
+
+Nó tạo report UI để debug selector.
+
+Chỉ dùng khi giao diện DeepSeek thay đổi.
+
+
+----------------------------------------------------------------------
+15) requirements.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY TRỰC TIẾP.
+
+Dùng với pip:
+
+    pip install -r requirements.txt
+
+Thông thường chỉ cần làm 1 lần.
+
+
+----------------------------------------------------------------------
+16) README_FAST_REPAIR.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Giải thích cơ chế:
+- timestamp sai vài giây
+- Python tự snap về timestamp transcript thật
+- không gọi DeepSeek phân tích lại
+
+
+----------------------------------------------------------------------
+17) README_FINAL_RESULT_FILTER.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Giải thích cơ chế:
+- DeepThink có thể reasoning rất dài
+- code quét từ dưới lên
+- lấy block timestamp CUỐI CÙNG trước DONE
+- bỏ reasoning phía trên
+- bỏ footer phía sau
+
+
+----------------------------------------------------------------------
+18) README_DEEPTHINK_CONFIRMED_STATE.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Giải thích trạng thái DeepThink thật:
+
+OFF:
+    aria-pressed="false"
+
+ON:
+    aria-pressed="true"
+    class có:
+    ds-toggle-button--selected
+
+
+----------------------------------------------------------------------
+19) README_DEEPTHINK_EXACT_SELECTOR.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Giải thích selector DeepThink thật của DeepSeek.
+
+
+----------------------------------------------------------------------
+20) README_PROFILE_LOGIN_FIX.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Đọc file này nếu:
+- login profile rồi nhưng main vẫn ra /sign_in
+- nghi login nhầm Chrome profile
+
+
+----------------------------------------------------------------------
+21) README_RESUME_OLD_WORK.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Giải thích cách nối:
+- DONE cũ
+- FAIL cũ
+- AI CUT cache cũ
+- raw_audio dở
+- MP3 final cũ
+- transcript cache cũ
+
+
+----------------------------------------------------------------------
+22) README_SCREENSHOT_CALIBRATED.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Ghi chú selector UI đã calibrate từ screenshot thật.
+
+
+----------------------------------------------------------------------
+23) README_DEEPSEEK_PROJECT.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+README tổng quan project.
+
+
+----------------------------------------------------------------------
+24) TEST_EXTRACTED_FINAL_RESULT.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Chỉ là kết quả test bộ lọc FINAL RESULT.
+
+
+----------------------------------------------------------------------
+25) NEED_FROM_YOU.txt
+----------------------------------------------------------------------
+KHÔNG CHẠY.
+
+Đây là file cũ ghi những thứ cần cung cấp trong giai đoạn setup.
+Hiện tại phần lớn đã cung cấp và đã patch xong.
+
+
+======================================================================
+D. CƠ CHẾ RESUME - CODE BỊ TẮT GIỮA CHỪNG THÌ SAO?
+======================================================================
+
+1) Link đã DONE
+----------------
+Nếu có trong:
+
+    doneLink.txt
+
+=> lần sau bỏ qua.
+
+
+2) MP3 đã làm xong nhưng chưa kịp ghi DONE
+------------------------------------------
+Main scan file:
+
+    * [VIDEO_ID].mp3
+
+Nếu thấy final hợp lệ:
+=> tự ghi DONE.
+
+
+3) DeepSeek đã phân tích xong nhưng media chưa chạy xong
+--------------------------------------------------------
+Nếu đã có:
+
+    <VIDEO_ID>_CUTS.txt
+
+và kết quả còn hợp lệ:
+
+=> REUSE AI result
+=> không hỏi DeepSeek lại
+=> đi thẳng download/cut.
+
+
+4) raw_audio đang dở / đã tải xong
+----------------------------------
+Nếu:
+
+    downloads\raw_audio.mp3
+
+và:
+
+    downloads\raw_audio_source.txt
+
+đúng URL hiện tại,
+ffprobe đọc được duration:
+
+=> reuse raw audio
+=> không tải lại.
+
+
+5) Link FAIL
+------------
+failedLink.jsonl là lịch sử fail.
+
+Pipeline tính:
+
+    FAILED - DONE
+
+=> những link fail chưa hoàn tất sẽ được retry ở cuối batch.
+
+
+======================================================================
+E. FLOW THỰC TẾ 1 VIDEO
+======================================================================
+
+VIDEO N:
+
+    YouTube
+      ↓
+    lấy transcript timestamp
+      ↓
+    DeepSeek profile theo round-robin
+      ↓
+    New Chat
+      ↓
+    bật DeepThink
+      ↓
+    dán prompt
+      ↓
+    upload transcript TXT
+      ↓
+    Send
+      ↓
+    DeepThink reasoning
+      ↓
+    lấy FINAL RESULT cuối trước DONE
+      ↓
+    validate timestamp
+
+Nếu timestamp lệch nhỏ:
+      ↓
+    Python FAST REPAIR
+    KHÔNG gọi DeepSeek lại
+
+Nếu không sửa local an toàn:
+      ↓
+    MICRO REPAIR
+    chỉ gửi final block + vài dòng transcript gần timestamp sai
+
+Sau đó:
+      ↓
+    MEDIA QUEUE
+      ↓
+    yt-dlp audio
+      ↓
+    FFmpeg cut/merge
+      ↓
+    verify MP3
+      ↓
+    doneLink.txt
+
+
+Đồng thời:
+
+VIDEO N+1 có thể bắt đầu DeepSeek
+trong khi MEDIA của VIDEO N đang chạy.
+
+
+======================================================================
+F. KHI CHẠY MAIN - CÁC PHÍM CẦN NHẤN
+======================================================================
+
+Khi main hỏi:
+
+    Dán 1 link YouTube rồi ENTER,
+    hoặc chỉ ENTER để dùng list.txt:
+
+Muốn chạy list.txt:
+    ENTER
+
+Muốn chạy 1 link:
+    dán link + ENTER
+
+
+Nếu DeepSeek profile thật sự bị logout và main hỏi:
+
+    ENTER = tiếp tục, QUIT = dừng
+
+Thì:
+1. Login ngay trong cửa sổ Chrome DeepSeek mà main mở.
+2. Chờ thấy "Message DeepSeek".
+3. Quay lại console.
+4. Nhấn ENTER.
+
+
+======================================================================
+G. THỨ TỰ NGẮN GỌN NHẤT
+======================================================================
+
+LẦN ĐẦU:
+
+    1. pip install -r requirements.txt
+    2. CONNECT_OLD_WORKSPACE.bat
+    3. LOGIN_DEEPSEEK_PROFILE.bat -> chọn 1 -> login -> đóng Chrome
+    4. LOGIN_DEEPSEEK_PROFILE.bat -> chọn 2 -> login -> đóng Chrome
+    5. python auto_youtube_deepseek_cut.py
+    6. ENTER để dùng list.txt
+
+
+NHỮNG LẦN SAU:
+
+    1. python auto_youtube_deepseek_cut.py
+    2. ENTER
+
+
+NẾU DEEPSEEK BẮT LOGIN LẠI:
+
+    LOGIN_DEEPSEEK_PROFILE.bat
+
+
+NẾU NGHI PROFILE SAI:
+
+    python CHECK_DEEPSEEK_PROFILE_PATHS.py
+
+
+NẾU UI DEEPSEEK ĐỔI VÀ SELECTOR HỎNG:
+
+    python PROBE_DEEPSEEK_UI.py
+
+
+======================================================================
+H. LƯU Ý QUAN TRỌNG
+======================================================================
+
+- Không chạy ChatGPT pipeline cũ và DeepSeek pipeline mới cùng lúc.
+- Không xóa doneLink.txt nếu không muốn chạy lại link đã hoàn tất.
+- Không xóa failedLink.jsonl nếu muốn giữ lịch sử retry.
+- Không xóa channels\ nếu muốn reuse transcript, CUTS và MP3 cũ.
+- Không xóa workspace_bridge.json nếu muốn tiếp tục nối project cũ.
+- DeepThink được bật trước mỗi lượt phân tích.
+- Search không bị code tự bật/tắt.
+- Timestamp cuối cùng vẫn phải được strict validate với transcript.
+- FAST REPAIR chỉ dùng cho timestamp lệch nhỏ gần mốc thật.
+- MP3 chỉ được đánh DONE sau khi file cuối đọc được duration hợp lệ.
+
+======================================================================
+HẾT
+======================================================================

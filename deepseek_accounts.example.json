@@ -1,0 +1,15 @@
+{
+  "accounts": [
+    {
+      "key": "deepseek1",
+      "name": "deepseek1",
+      "enabled": true
+    },
+    {
+      "key": "deepseek2",
+      "name": "deepseek2",
+      "enabled": true
+    }
+  ],
+  "note": "profile_dir is intentionally omitted. Code always uses <project>/chrome_profiles/deepseek_accounts/<key>."
+}
