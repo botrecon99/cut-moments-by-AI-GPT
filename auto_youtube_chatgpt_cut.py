@@ -89,6 +89,14 @@ CHATGPT_DEBUG_PORT = 9222
 YOUTUBE_HOME = "https://www.youtube.com/"
 CHATGPT_HOME = "https://chatgpt.com/"
 
+# ============================================================
+# CHATGPT DIRECT MODE - KHÔNG DÙNG PROJECT
+# ============================================================
+# True = mọi video tạo chat thường trực tiếp tại https://chatgpt.com/
+# Không cần Project URL, không cần tạo Project.
+CHATGPT_DIRECT_MODE = True
+
+
 # ChatGPT Project mode: mỗi lần chạy chọn 1 Project/người.
 # Mỗi video/attempt sẽ quay về đúng URL Project này để tạo NEW CHAT bên trong Project,
 # tuyệt đối không tạo chat ngoài trang Home.
@@ -209,27 +217,21 @@ STRICT_AI_TIMESTAMP_VALIDATION = True
 # CHATGPT PROJECT / FOLDER MODE
 # ============================================================
 
-DEFAULT_CHATGPT_PROJECTS = [
-    {"key": "chien", "name": "chien", "url": "https://chatgpt.com/g/g-p-69c239bcb7488191bf506226cce32c3a-chien/project", "enabled": True},
-    {"key": "nhat", "name": "nhat", "url": "https://chatgpt.com/g/g-p-69c491ecae7081918913e18f59578764-nhat/project", "enabled": True},
-    {"key": "nem", "name": "nem", "url": "https://chatgpt.com/g/g-p-69d37c9c7b28819184b98c10f77012ef-nem/project", "enabled": True},
-    {"key": "trung", "name": "trung", "url": "https://chatgpt.com/g/g-p-6a8584bc058c8191acda20d6c8f20abb-trung/project", "enabled": True},
-    {"key": "loi", "name": "loi", "url": "https://chatgpt.com/g/g-p-6a6073c858c48191ba69022d7a6e6e45-loi/project", "enabled": True},
-    {"key": "sang", "name": "sang", "url": "https://chatgpt.com/g/g-p-69d8af27d9808191a7f6aa14e8bbf76e-sang/project", "enabled": True},
-]
+DEFAULT_CHATGPT_PROJECTS = []  # DIRECT MODE: legacy only, không dùng.
 
-# Mặc định tạo 6 Chrome profile độc lập. Có thể thêm bao nhiêu account/profile tùy ý
-# bằng LOGIN_CHATGPT_ACCOUNTS.bat. Mỗi account có thể có nhiều Project.
+# Nếu chatgpt_accounts.json đã tồn tại thì code vẫn dùng các account/profile trong đó
+# nhưng BỎ QUA hoàn toàn field "projects".
+# Nếu chưa có file config, tạo 1 profile mặc định để chạy trực tiếp.
 DEFAULT_CHATGPT_ACCOUNTS = [
     {
-        "key": item["key"],
-        "name": item["name"],
-        "profile_dir": f"chrome_profiles/chatgpt_accounts/{item['key']}",
+        "key": "default",
+        "name": "default",
+        "profile_dir": "chrome_profiles/chatgpt_accounts/default",
         "enabled": True,
-        "projects": [dict(item)],
+        "projects": [],
     }
-    for item in DEFAULT_CHATGPT_PROJECTS
 ]
+
 
 
 def _safe_account_key(value):
@@ -285,7 +287,7 @@ def ensure_chatgpt_accounts_file():
         return
     payload = {
         "accounts": DEFAULT_CHATGPT_ACCOUNTS,
-        "note": "Mỗi account dùng một Chrome profile riêng. Login bằng LOGIN_CHATGPT_ACCOUNTS.bat.",
+        "note": "DIRECT MODE: mỗi account dùng một Chrome profile riêng; field projects không bắt buộc và bị bỏ qua.",
     }
     CHATGPT_ACCOUNTS_FILE.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
@@ -411,25 +413,31 @@ def choose_chatgpt_project():
 
 def build_chatgpt_rotation_targets():
     """
-    Tạo danh sách xoay profile theo thứ tự trong chatgpt_accounts.json.
-
-    Mỗi account/profile dùng Project enabled đầu tiên của chính account đó.
-    Nếu account chưa có Project thì bỏ khỏi vòng xoay và in cảnh báo.
+    DIRECT MODE:
+    - Xoay tất cả account/profile enabled trong chatgpt_accounts.json.
+    - KHÔNG cần Project.
+    - Field projects nếu còn trong JSON chỉ là legacy và bị bỏ qua.
     """
     accounts = load_chatgpt_accounts()
     targets = []
+
     for account in accounts:
-        projects = account.get("projects") or []
-        if not projects:
-            print(f"⚠️ Bỏ profile '{account.get('name') or account.get('key')}': chưa có Project URL.")
-            continue
-        project = dict(projects[0])
-        project.update({
+        direct_target = {
+            "key": "direct",
+            "name": "ChatGPT Direct",
+            "url": CHATGPT_HOME,
+            "project_id": "",
+            "enabled": True,
+            "direct": True,
             "account_key": account["key"],
             "account_name": account["name"],
             "profile_dir": account["profile_dir"],
+        }
+        targets.append({
+            "account": account,
+            "project": direct_target,  # compatibility name; đây KHÔNG phải Project thật
         })
-        targets.append({"account": account, "project": project})
+
     return targets
 
 
@@ -455,22 +463,30 @@ def save_chatgpt_round_robin_cursor(next_index):
 
 def print_chatgpt_rotation_plan(targets, start_cursor=0):
     print("\n" + "=" * 72)
-    print("CHATGPT MULTI-PROFILE ROUND ROBIN")
+    print("CHATGPT DIRECT MULTI-PROFILE ROUND ROBIN - KHÔNG PROJECT")
     print("=" * 72)
     for idx, target in enumerate(targets, start=1):
         account = target["account"]
-        project = target["project"]
         start_mark = "  < lượt đầu" if (idx - 1) == (start_cursor % len(targets)) else ""
         print(
             f"{idx}) {account['name']} [{account['key']}] -> "
-            f"Project: {project['name']}{start_mark}"
+            f"ChatGPT Direct{start_mark}"
         )
     print(f"🔄 Tổng profile trong vòng xoay: {len(targets)}")
-    print("⚡ Chrome ChatGPT được giữ sống nếu video kế tiếp dùng cùng profile; chỉ đổi/restart khi thật sự cần.")
+    print("🆕 Mỗi video = 1 chat thường mới tại chatgpt.com.")
+    print("⚡ Không tạo/không dùng Project; Chrome profile vẫn được giữ để nhanh.")
 
 
 def chatgpt_project_url_matches(current_url, project):
+    """
+    Compatibility matcher.
+    DIRECT MODE: chỉ cần thuộc chatgpt.com; /c/... được chặn riêng bởi
+    chatgpt_is_existing_conversation_url() khi cần tạo chat mới.
+    """
     current = str(current_url or "")
+    if (project or {}).get("direct"):
+        return current.lower().startswith("https://chatgpt.com")
+
     project_id = str((project or {}).get("project_id") or "")
     if project_id and project_id.lower() in current.lower():
         return True
@@ -498,12 +514,23 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
     """
     timeout = timeout or WAIT_CHATGPT_READY
     if not project:
-        raise RuntimeError("Chưa chọn ChatGPT Project")
-    target = str(project.get("url") or "").strip()
-    if not target:
-        raise RuntimeError("ChatGPT Project URL rỗng")
+        project = {
+            "key": "direct",
+            "name": "ChatGPT Direct",
+            "url": CHATGPT_HOME,
+            "project_id": "",
+            "direct": True,
+        }
 
-    print(f"📁 NEW CHAT trong Project: {project.get('name') or project.get('key')}")
+    is_direct = bool(project.get("direct") or CHATGPT_DIRECT_MODE)
+    target = CHATGPT_HOME if is_direct else str(project.get("url") or "").strip()
+    if not target:
+        raise RuntimeError("ChatGPT target URL rỗng")
+
+    if is_direct:
+        print("🆕 NEW CHAT TRỰC TIẾP: chatgpt.com (KHÔNG Project)")
+    else:
+        print(f"📁 NEW CHAT trong Project: {project.get('name') or project.get('key')}")
 
     # FAST + ĐÚNG:
     # Chỉ được bỏ navigation nếu đang ở PROJECT ROOT.
@@ -523,10 +550,10 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
         already_ready = False
 
     if already_ready:
-        print("⚡ Đang ở Project ROOT + composer sạch -> dùng luôn.")
+        print("⚡ Đang ở ChatGPT Home + composer sạch -> dùng luôn." if is_direct else "⚡ Đang ở Project ROOT + composer sạch -> dùng luôn.")
     else:
         if in_old_conversation:
-            print("🆕 Đang ở conversation cũ (/c/...) -> quay về Project ROOT để tạo CHAT MỚI.")
+            print("🆕 Đang ở chat cũ (/c/...) -> quay về ChatGPT Home để tạo CHAT MỚI." if is_direct else "🆕 Đang ở conversation cũ (/c/...) -> quay về Project ROOT để tạo CHAT MỚI.")
         try:
             driver.get(target)
         except Exception as exc:
@@ -551,7 +578,7 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
     # Chốt NEW CHAT: không được phép còn ở /c/... của chat cũ.
     current = safe_current_url(driver)
     if chatgpt_is_existing_conversation_url(current):
-        print("🔄 ChatGPT vẫn giữ conversation cũ -> ép mở lại Project root 1 lần...")
+        print("🔄 ChatGPT vẫn giữ chat cũ -> ép mở lại ChatGPT Home 1 lần..." if is_direct else "🔄 ChatGPT vẫn giữ conversation cũ -> ép mở lại Project root 1 lần...")
         driver.get(target)
         composer = wait_chatgpt_composer(driver, timeout=min(timeout, 20))
         current = safe_current_url(driver)
@@ -561,26 +588,30 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
             "Không tạo được chat mới: URL vẫn đang ở conversation cũ (/c/...)."
         )
 
-    # Nếu bị redirect ra Home/login hoặc Project khác thì không được gửi nhầm.
-    if not chatgpt_project_url_matches(current, project):
-        # Có UI versions giữ project id trong DOM dù URL được rewrite. Kiểm tra link Project hiện diện.
-        project_id = project.get("project_id") or ""
-        dom_has_project = False
-        if project_id:
-            try:
-                dom_has_project = bool(driver.find_elements(By.CSS_SELECTOR, f'a[href*="{project_id}"]'))
-            except Exception:
-                dom_has_project = False
-        if not dom_has_project:
-            raise RuntimeError(
-                f"ChatGPT không ở đúng Project '{project.get('name')}'. URL hiện tại: {current}"
-            )
+    # DIRECT MODE chỉ yêu cầu vẫn ở chatgpt.com và không phải chat cũ /c/...
+    if is_direct:
+        if not str(current or "").lower().startswith("https://chatgpt.com"):
+            raise RuntimeError(f"ChatGPT bị redirect khỏi chatgpt.com. URL hiện tại: {current}")
+    else:
+        # Nếu bị redirect ra Home/login hoặc Project khác thì không được gửi nhầm.
+        if not chatgpt_project_url_matches(current, project):
+            project_id = project.get("project_id") or ""
+            dom_has_project = False
+            if project_id:
+                try:
+                    dom_has_project = bool(driver.find_elements(By.CSS_SELECTOR, f'a[href*="{project_id}"]'))
+                except Exception:
+                    dom_has_project = False
+            if not dom_has_project:
+                raise RuntimeError(
+                    f"ChatGPT không ở đúng Project '{project.get('name')}'. URL hiện tại: {current}"
+                )
 
     # Xóa draft mà ChatGPT có thể restore ở Project page.
     # Không coi draft cũ là lỗi login. Tự xóa nhiều lớp trước.
     residual = _loose_compare_text(get_chatgpt_composer_text(driver, composer))
     if residual:
-        print(f"🧹 Project restore draft cũ ({len(residual)} chars) -> đang tự xóa...")
+        print(f"🧹 ChatGPT restore draft cũ ({len(residual)} chars) -> đang tự xóa...")
 
     for clear_try in range(1, 5):
         composer = find_chatgpt_composer(driver) or composer
@@ -590,14 +621,14 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
         residual = _loose_compare_text(get_chatgpt_composer_text(driver, composer))
         if not residual:
             if clear_try > 1:
-                print(f"✅ Đã tự xóa draft Project ở lượt {clear_try}/4.")
+                print(f"✅ Đã tự xóa draft ở lượt {clear_try}/4.")
             break
         print(f"   ⚠️ Draft vẫn còn {len(residual)} chars sau clear {clear_try}/4.")
 
     # Một số phiên ChatGPT restore draft muộn sau navigation.
     # Refresh Project đúng 1 lần rồi clear lại, thay vì bắt user login vô lý.
     if residual:
-        print("🔄 Draft bị restore lại -> refresh Project 1 lần rồi tự xóa tiếp...")
+        print("🔄 Draft bị restore lại -> refresh ChatGPT 1 lần rồi tự xóa tiếp...")
         try:
             driver.get(target)
             WebDriverWait(driver, min(timeout, 45)).until(lambda d: find_chatgpt_composer(d))
@@ -609,18 +640,18 @@ def open_chatgpt_project_new_chat(driver, project, timeout=None):
                 composer = find_chatgpt_composer(driver) or composer
                 residual = _loose_compare_text(get_chatgpt_composer_text(driver, composer))
                 if not residual:
-                    print("✅ Draft Project đã được xóa sau refresh.")
+                    print("✅ Draft đã được xóa sau refresh.")
                     break
         except Exception:
             pass
 
     if residual:
         raise RuntimeError(
-            f"Composer Project còn draft cũ ({len(residual)} chars) sau AUTO-CLEAR; "
+            f"Composer còn draft cũ ({len(residual)} chars) sau AUTO-CLEAR; "
             "đây không phải lỗi login."
         )
 
-    print("✅ Đúng Project + composer sạch. Sẵn sàng tạo chat mới.")
+    print("✅ ChatGPT Direct + composer sạch. Sẵn sàng tạo chat mới." if is_direct else "✅ Đúng Project + composer sạch. Sẵn sàng tạo chat mới.")
     return composer
 
 
@@ -1677,11 +1708,11 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
                 composer = find_chatgpt_composer(old_driver)
                 residual = _loose_compare_text(get_chatgpt_composer_text(old_driver, composer)) if composer else "x"
                 if composer and not residual:
-                    print("⚡ FAST CHATGPT: giữ Chrome/profile, đang ở Project ROOT.")
+                    print("⚡ FAST CHATGPT: giữ Chrome/profile, đang ở ChatGPT Home.")
                     return old_driver, old_process, project
 
             if chatgpt_is_existing_conversation_url(current_url):
-                print("🆕 FAST CHATGPT: Chrome giữ nguyên nhưng chat cũ sẽ KHÔNG được reuse.")
+                print("🆕 FAST CHATGPT: giữ Chrome nhưng KHÔNG reuse chat cũ.")
 
             # Không đúng Project hoặc composer chưa có: navigation/retry nhẹ, vẫn không restart.
             ok, manual_auth, exc = auto_open_project_with_retries(
@@ -1719,7 +1750,7 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
     print("🔄 CHUYỂN CHATGPT PROFILE")
     print(f"👤 Account/profile: {account.get('name')} [{account.get('key')}]")
     print(f"📁 Chrome data: {CHATGPT_USER_DATA_DIR}")
-    print(f"📂 Project: {project.get('name')}")
+    print("🌐 Mode: ChatGPT Direct (không Project)" if project.get("direct") else f"📂 Project: {project.get('name')}")
     print("=" * 72)
 
     start_url = project.get("url") or CHATGPT_HOME
@@ -1736,7 +1767,7 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
                 new_driver, project, attempts=4, timeout=WAIT_CHATGPT_READY
             )
             if ok:
-                print("✅ Profile đã login; vào đúng Project tự động.")
+                print("✅ Profile đã login; ChatGPT Direct sẵn sàng.")
                 return new_driver, new_process, project
 
             if manual_auth:
@@ -1752,13 +1783,13 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
                     print("✅ Login/xác minh xong; profile đã sẵn sàng.")
                     return new_driver, new_process, project
                 raise RuntimeError(
-                    f"Đã login nhưng vẫn không vào được Project {project.get('name')}: "
+                    f"Đã login nhưng ChatGPT Direct vẫn chưa sẵn sàng: "
                     f"{str(exc2).strip() or type(exc2).__name__}"
                 )
 
             err = str(exc).strip() if exc else ""
             print(
-                f"⚠️ Không phải lỗi login; Project/UI chưa sẵn sàng sau auto retry"
+                f"⚠️ Không phải lỗi login; ChatGPT UI chưa sẵn sàng sau auto retry"
                 f"{(': ' + err) if err else ''}"
             )
 
@@ -1770,7 +1801,7 @@ def open_chatgpt_rotation_target(account, project, old_driver=None, old_process=
                 continue
 
             raise RuntimeError(
-                f"ChatGPT Project/composer không sẵn sàng sau auto recovery; "
+                f"ChatGPT composer không sẵn sàng sau auto recovery; "
                 "không phát hiện login/Cloudflare."
             )
 
@@ -5358,14 +5389,14 @@ def ask_chatgpt(driver, prompt_path, transcript_path, chatgpt_project=None):
         print("NEW CHAT RIÊNG CHO VIDEO -> PROMPT SAFE INLINE -> TRANSCRIPT FILE -> SEND")
         print("=" * 72)
 
-        # NEW CHAT thật BÊN TRONG PROJECT cho mỗi attempt/video.
-        # Không bao giờ driver.get(CHATGPT_HOME) ở luồng active để tránh tạo chat ngoài.
+        # NEW CHAT THƯỜNG trực tiếp tại chatgpt.com cho mỗi attempt/video.
+        # Không dùng Project; mỗi video luôn tách chat riêng.
         try:
             composer = open_chatgpt_project_new_chat(
                 driver, chatgpt_project, timeout=WAIT_CHATGPT_READY
             )
         except Exception as exc:
-            print(f"❌ Không mở được New Chat trong đúng Project: {exc}")
+            print(f"❌ Không mở được New Chat trực tiếp: {exc}")
             continue
 
         previous_count = len(get_assistant_turns(driver))
@@ -6097,7 +6128,9 @@ def prepare_video_ai_job(
         print(f"📺 Kênh: {workspace['channel_title']}")
         print(f"🆔 Channel ID: {workspace['channel_id']}")
         print(f"📁 Folder: {workspace['folder_name']}")
-        if chatgpt_project:
+        if chatgpt_project and chatgpt_project.get("direct"):
+            print("👤 ChatGPT: DIRECT CHAT (không Project)")
+        elif chatgpt_project:
             print(f"👤 ChatGPT Project: {chatgpt_project.get('name') or chatgpt_project.get('key')}")
 
         # Crash recovery: file final đã có nhưng doneLink thiếu.
@@ -6563,8 +6596,8 @@ def main():
     ensure_dirs()
 
     print("=" * 72)
-    print(" AUTO YOUTUBE MAIN-CONTENT CUT PIPELINE - CHATGPT ROUND ROBIN")
-    print(" YouTube get_panel -> ChatGPT multi-profile -> yt-dlp -> FFmpeg cut/merge")
+    print(" AUTO YOUTUBE MAIN-CONTENT CUT PIPELINE - CHATGPT DIRECT")
+    print(" YouTube get_panel -> ChatGPT Direct multi-profile -> yt-dlp -> FFmpeg cut/merge")
     print("=" * 72)
     print(f"📁 Project: {BASE_DIR}")
     print(f"📁 YouTube profile: {YOUTUBE_USER_DATA_DIR}")
@@ -6587,8 +6620,8 @@ def main():
 
     rotation_targets = build_chatgpt_rotation_targets()
     if not rotation_targets:
-        print("❌ Không có account/profile nào vừa enabled vừa có Project URL.")
-        print("👉 Chạy LOGIN_CHATGPT_ACCOUNTS.bat để login và gán Project trước.")
+        print("❌ Không có ChatGPT account/profile enabled trong chatgpt_accounts.json.")
+        print("👉 Chỉ cần tạo/login Chrome profile; KHÔNG cần Project.")
         return
 
     rotation_cursor = load_chatgpt_round_robin_cursor(len(rotation_targets))
@@ -6715,7 +6748,7 @@ def main():
                 f"{phase_name} {display_index}/{display_total} -> "
                 f"{account['name']} [{account['key']}]"
             )
-            print(f"📂 Project: {project['name']}")
+            print("🌐 ChatGPT: DIRECT (không Project)")
             print("=" * 72)
 
             outcome = {"status": "failed", "url": video_url}
